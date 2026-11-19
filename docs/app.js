@@ -183,8 +183,11 @@ function openPhoto(item) {
   $('photo-description').textContent = item.description
   const dimensions = item.width > 1 && item.height > 1 ? `${item.width} × ${item.height} · ` : ''
   $('photo-meta').textContent = `${dimensions}${size.format(item.size_bytes / mebibyte)} МБ`
-  $('photo-preview').src = assetURL(item.id, 'preview')
-  $('photo-preview').alt = item.title
+  const preview = $('photo-preview')
+  preview.hidden = true
+  preview.alt = item.title
+  message($('photo-preview-status'), 'Загружаем превью…')
+  preview.src = assetURL(item.id, 'preview')
   $('photo-original').textContent = 'Скачать оригинал'
   $('photo-original').href = assetURL(item.id, 'original')
   photoDialog.showModal()
@@ -363,6 +366,14 @@ async function downloadPhoto(event) {
   button.textContent = 'Скачать оригинал'
 }
 
+$('photo-preview').addEventListener('load', (event) => {
+  if (!openPhotoItem) return
+  event.currentTarget.hidden = false
+  message($('photo-preview-status'))
+})
+$('photo-preview').addEventListener('error', () => {
+  if (openPhotoItem) message($('photo-preview-status'), 'Превью пока недоступно. Оригинал можно скачать.')
+})
 $('photo-original').addEventListener('click', downloadPhoto)
 photoDialog.addEventListener('close', () => {
   photoDownload?.abort()

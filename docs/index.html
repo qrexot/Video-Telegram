@@ -10,7 +10,7 @@
   <title>Видео — Video Telegram</title>
   <link rel="icon" href="./video.svg">
   <link rel="stylesheet" href="./style.css?v=9">
-  <script type="module" src="./app.js?v=11"></script>
+  <script type="module" src="./app.js?v=12"></script>
 </head>
 <body>
   <svg class="icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -143,7 +143,8 @@
   </dialog>
   <dialog id="photo-dialog" class="photo-dialog" aria-labelledby="photo-title">
     <div class="dialog-header"><h2 id="photo-title"></h2><button type="button" class="close subtle" data-close aria-label="Закрыть">×</button></div>
-    <img id="photo-preview" alt="">
+    <p id="photo-preview-status" class="message" role="status"></p>
+    <img id="photo-preview" alt="" hidden>
     <p id="photo-description"></p>
     <div class="photo-actions"><span id="photo-meta"></span><a id="photo-original" class="primary">Скачать оригинал</a></div>
   </dialog>

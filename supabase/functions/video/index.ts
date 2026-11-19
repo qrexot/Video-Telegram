@@ -548,13 +548,16 @@ async function mediaAsset(request: Request, params: URLSearchParams) {
     messageId = video.telegram_cover_id
     thumb = video.telegram_cover_thumb
   } else if (type === "preview" || type === "original") {
-    const photo = await db.from("photos").select("filename,mime_type,telegram_original_id,telegram_preview_id,telegram_original_thumb,telegram_preview_thumb").eq("id", id)
+    const photo = await db.from("photos").select("filename,mime_type,size_bytes,telegram_original_id,telegram_preview_id,telegram_original_thumb,telegram_preview_thumb").eq("id", id)
       .eq("hidden", false).is("deleted_at", null).maybeSingle()
     if (photo.error) throw photo.error
     if (!photo.data) throw new HttpError(404)
     messageId = type === "original" ? photo.data.telegram_original_id : photo.data.telegram_preview_id
     thumb = type === "original" ? photo.data.telegram_original_thumb : photo.data.telegram_preview_thumb
-    if (!thumb && type === "preview" && photo.data.telegram_original_id === messageId) mime = photo.data.mime_type
+    if (!thumb && type === "preview" && photo.data.telegram_original_id === messageId) {
+      if (photo.data.size_bytes > playbackRange) throw new HttpError(404)
+      mime = photo.data.mime_type
+    }
     if (type === "original") {
       fileName = photo.data.filename
       mime = photo.data.mime_type
@@ -966,12 +969,94 @@ async function registerChannelMedia(post: Api.Message) {
   return Boolean(result.data?.length)
 }
 
-async function importChannel(request: Request) {
+async function authorizeTelegramWorker(request: Request) {
   const candidate = request.headers.get("x-video-sync") || ""
   if (!/^[a-f0-9]{64}$/.test(candidate)) throw new HttpError(401)
   const access = await db.rpc("video_telegram_import_authorized", { candidate })
   if (access.error) throw access.error
   if (access.data !== true) throw new HttpError(401)
+  return candidate
+}
+
+async function telegramPreviewSource(request: Request, params: URLSearchParams) {
+  await authorizeTelegramWorker(request)
+  const id = validId(params.get("id"))
+  if (!request.headers.has("Range")) throw new HttpError(400)
+  const row = await db.from("photos").select("telegram_original_id,telegram_original_thumb,mime_type")
+    .eq("id", id).is("deleted_at", null).maybeSingle()
+  if (row.error) throw row.error
+  if (!row.data?.telegram_original_id) throw new HttpError(404)
+  const { client, file } = await telegramImageFile(row.data.telegram_original_id, row.data.telegram_original_thumb)
+  return photoResponse(request, client, file, new Headers({ ...headers, "Content-Type": row.data.mime_type }))
+}
+
+let imageMagickReady: Promise<typeof import("npm:@imagemagick/magick-wasm@0.0.39")> | undefined
+
+function imageMagick() {
+  if (!imageMagickReady) {
+    imageMagickReady = import("npm:@imagemagick/magick-wasm@0.0.39").then(async (magick) => {
+      const wasm = new URL("magick.wasm", import.meta.resolve("npm:@imagemagick/magick-wasm@0.0.39"))
+      await magick.initializeImageMagick(await Deno.readFile(wasm))
+      return magick
+    }).catch((error) => {
+      imageMagickReady = undefined
+      throw error
+    })
+  }
+  return imageMagickReady
+}
+
+async function generatePhotoPreview(bytes: Uint8Array) {
+  const { ImageMagick, MagickFormat, MagickReadSettings } = await imageMagick()
+  const settings = new MagickReadSettings()
+  settings.setDefine(MagickFormat.Jpeg, "size", "1400x1400")
+  return await ImageMagick.read(bytes, settings, (image) => {
+    image.autoOrient()
+    const ratio = Math.min(1, 1400 / Math.max(image.width, image.height))
+    if (ratio < 1) image.thumbnail(Math.round(image.width * ratio), Math.round(image.height * ratio))
+    image.strip()
+    image.quality = 76
+    return image.write(MagickFormat.Jpeg, (output) => new Blob([new Uint8Array(output)], { type: "image/jpeg" }))
+  })
+}
+
+async function runTelegramPreviewJob(request: Request) {
+  const candidate = await authorizeTelegramWorker(request)
+  const claim = await db.rpc("claim_telegram_photo_preview")
+  if (claim.error) throw claim.error
+  const row = (claim.data as { id: string; size_bytes: number }[])[0]
+  if (!row) return json({ generated: 0 })
+  const { id, size_bytes: size } = row
+  if (!size || size > photoMaxSize) throw new HttpError(400)
+  const endpoint = new URL("/functions/v1/video", Deno.env.get("SUPABASE_URL")!)
+  endpoint.search = new URLSearchParams({ action: "telegram-preview-source", id }).toString()
+  const chunkSize = 2 * 1024 * 1024
+  const bytes = new Uint8Array(size)
+  const readPart = async (offset: number) => {
+    const end = Math.min(size, offset + chunkSize) - 1
+    const result = await fetch(endpoint, {
+      headers: { "x-video-sync": candidate, Range: `bytes=${offset}-${end}` },
+      signal: AbortSignal.timeout(26000),
+    })
+    if (result.status !== 206) throw new HttpError(502, "Telegram не отдал фото для превью.")
+    const chunk = new Uint8Array(await result.arrayBuffer())
+    if (chunk.length !== end - offset + 1) throw new HttpError(502)
+    bytes.set(chunk, offset)
+  }
+  for (let offset = 0; offset < size; offset += 3 * chunkSize) {
+    const jobs = [offset, offset + chunkSize, offset + 2 * chunkSize].filter((start) => start < size)
+    await Promise.all(jobs.map(readPart))
+  }
+  const preview = await generatePhotoPreview(bytes)
+  const image = await telegramImage(preview, "preview.jpg", `photo:${id}:preview`)
+  const saved = await db.from("photos").update({ telegram_preview_id: image.sentId, telegram_preview_thumb: null })
+    .eq("id", id)
+  if (saved.error) throw saved.error
+  return json({ generated: 1, bytes: preview.size })
+}
+
+async function importChannel(request: Request) {
+  await authorizeTelegramWorker(request)
   const now = new Date()
   const until = new Date(now.getTime() + 110000).toISOString()
   const lock = await db.from("video_telegram_import_state").update({ busy_until: until })
@@ -1007,6 +1092,8 @@ Deno.serve(async (request) => {
   try {
     const action = params.get("action")
     if (request.method === "POST" && action === "telegram-import") return await importChannel(request)
+    if (request.method === "POST" && action === "telegram-preview-job") return await runTelegramPreviewJob(request)
+    if (request.method === "GET" && action === "telegram-preview-source") return await telegramPreviewSource(request, params)
     if (request.method === "GET" && (action === "list" || action === "photos")) {
       if (params.has("view") && params.get("view") !== "public") await requireOwner(request)
       return await listMedia(params, action)
