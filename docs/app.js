@@ -2,12 +2,16 @@ import { config } from './config.js'
 
 const $ = (id) => document.getElementById(id)
 const loginForm = $('login-form')
+const ownerLogin = $('owner-login')
+const ownerEntry = $('owner-entry')
+const uploadButton = $('upload-open')
+const signOutButton = $('sign-out')
+const emptyDetail = $('empty-detail')
 const uploadForm = $('upload-form')
 const player = $('player')
 const video = $('video')
 const pageSize = 24
 let token = ''
-let role = ''
 let playingUrl = ''
 let playerRequest
 let libraryRequest
@@ -45,38 +49,36 @@ async function responseError(response, fallback) {
 
 async function request(action, { method = 'GET', params = {}, body, signal } = {}) {
   const query = new URLSearchParams({ action, ...params })
+  const headers = { apikey: config.publishableKey }
+  if (action === 'session' || action === 'upload') headers.Authorization = `Bearer ${token}`
   const response = await fetch(`${config.url}/functions/v1/video?${query}`, {
-    method, body, signal,
-    headers: { apikey: config.publishableKey, Authorization: `Bearer ${token}` },
+    method, body, signal, headers,
     cache: 'no-store',
   })
   if (!response.ok) throw await responseError(response, 'Запрос не выполнен.')
   return response
 }
 
-function signedIn(value) {
-  $('login').hidden = value
-  $('library').hidden = !value
-  $('sign-out').hidden = !value
-  $('upload-open').hidden = !value || role !== 'owner'
+function updateOwnerControls(signedIn) {
+  ownerEntry.hidden = signedIn
+  signOutButton.hidden = !signedIn
+  uploadButton.hidden = !signedIn
+  updateEmptyDetail()
 }
 
-function signOut(reason = '') {
+function updateEmptyDetail() {
+  emptyDetail.textContent = $('search').value.trim() ? 'Попробуйте другой запрос.' :
+    uploadButton.hidden ? 'Здесь появятся загруженные видео.' : 'Нажмите «Загрузить», чтобы добавить первое видео.'
+}
+
+function signOut() {
   const previousToken = token
   token = ''
-  role = ''
-  libraryRequest?.abort()
-  playerRequest?.abort()
   uploadRequest?.abort()
-  for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close()
-  $('cards').replaceChildren()
+  if ($('upload-dialog').open) $('upload-dialog').close()
   uploadForm.reset()
   uploadId = undefined
-  $('search').value = ''
-  $('count').textContent = ''
-  offset = 0
-  signedIn(false)
-  message($('login-error'), reason, Boolean(reason))
+  updateOwnerControls(false)
   if (previousToken) {
     void fetch(`${config.url}/auth/v1/logout?scope=local`, {
       method: 'POST',
@@ -88,8 +90,10 @@ function signOut(reason = '') {
 
 function showError(error, element) {
   if (error.name === 'AbortError') return
-  if (error.status === 401 && token) {
-    signOut(error.message)
+  if (element === $('upload-status') && [401, 403].includes(error.status)) {
+    signOut()
+    ownerLogin.showModal()
+    message($('login-error'), error.message, true)
     return
   }
   message(element, error instanceof RequestError ? error.message : 'Проверьте подключение и попробуйте снова.', true)
@@ -97,7 +101,7 @@ function showError(error, element) {
 
 async function login(event) {
   event.preventDefault()
-  const submit = loginForm.querySelector('button')
+  const submit = loginForm.querySelector('button[type=submit]')
   submit.disabled = true
   message($('login-error'), 'Входим…')
   try {
@@ -112,12 +116,12 @@ async function login(event) {
     }
     const data = await response.json()
     token = data.access_token
-    const session = await request('session')
-    role = (await session.json()).role
+    await request('session')
     loginForm.reset()
     message($('login-error'))
-    signedIn(true)
-    void loadLibrary()
+    updateOwnerControls(true)
+    ownerLogin.close()
+    uploadButton.focus()
   } catch (error) {
     signOut()
     loginForm.elements.password.value = ''
@@ -156,7 +160,6 @@ function renderCard(item) {
 }
 
 async function loadLibrary(append = false) {
-  if (!token) return
   libraryRequest?.abort()
   const controller = new AbortController()
   libraryRequest = controller
@@ -180,8 +183,7 @@ async function loadLibrary(append = false) {
     $('more').hidden = offset >= total || items.length < pageSize
     $('empty').hidden = total !== 0
     $('empty-title').textContent = search ? 'Видео не найдено' : 'Видеотека пока пуста'
-    $('empty-detail').textContent = search ? 'Попробуйте другой запрос.' :
-      role === 'owner' ? 'Нажмите «Загрузить», чтобы добавить первое видео.' : 'Здесь появятся загруженные видео.'
+    updateEmptyDetail()
     $('library-status').hidden = true
   } catch (error) {
     showError(error, $('library-status'))
@@ -210,7 +212,7 @@ async function openPlayer(item) {
 
 async function upload(event) {
   event.preventDefault()
-  if (uploadRequest) return
+  if (!token || uploadRequest) return
   const file = uploadForm.elements.video.files[0]
   const title = uploadForm.elements.title.value.trim()
   const description = uploadForm.elements.description.value.trim()
@@ -246,10 +248,20 @@ async function upload(event) {
   }
 }
 
+ownerEntry.addEventListener('click', () => {
+  message($('login-error'))
+  ownerLogin.showModal()
+})
 loginForm.addEventListener('submit', login)
+ownerLogin.addEventListener('close', () => {
+  loginForm.elements.password.value = ''
+})
 uploadForm.addEventListener('submit', upload)
 uploadForm.addEventListener('input', () => { if (!uploadRequest) uploadId = undefined })
-$('sign-out').addEventListener('click', () => signOut())
+signOutButton.addEventListener('click', () => {
+  signOut()
+  ownerEntry.focus()
+})
 $('upload-open').addEventListener('click', () => {
   message($('upload-status'))
   $('upload-dialog').showModal()
@@ -288,8 +300,9 @@ $('search').addEventListener('input', () => {
 })
 $('more').addEventListener('click', () => void loadLibrary(true))
 window.addEventListener('pagehide', () => { if (token) signOut() })
-if (!config.url || !config.publishableKey || window.top !== window.self) {
-  loginForm.querySelector('button').disabled = true
-  loginForm.querySelectorAll('input').forEach((input) => { input.disabled = true })
-  message($('login-error'), window.top === window.self ? 'Видеотека готовится к подключению.' : 'Откройте видеотеку в отдельной вкладке.')
+if (config.url && config.publishableKey) {
+  ownerEntry.hidden = window.top !== window.self
+  void loadLibrary()
+} else {
+  message($('library-status'), 'Видеотека готовится к подключению.')
 }

@@ -77,7 +77,7 @@ function connectTelegram() {
   return telegramPromise
 }
 
-async function requireMember(request: Request) {
+async function requireOwner(request: Request) {
   const token = request.headers.get("Authorization")?.match(/^Bearer (\S+)$/i)?.[1]
   if (!token || token.length > 8192) throw new HttpError(401)
   const { data: { user }, error } = await db.auth.getUser(token)
@@ -85,8 +85,8 @@ async function requireMember(request: Request) {
 
   const member = await db.from("video_members").select("role").eq("user_id", user.id).maybeSingle()
   if (member.error) throw member.error
-  if (!member.data) throw new HttpError(403)
-  return { id: user.id, role: member.data.role }
+  if (member.data?.role !== "owner") throw new HttpError(403)
+  return user.id
 }
 
 async function listVideos(params: URLSearchParams) {
@@ -224,14 +224,16 @@ Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers })
   const params = new URL(request.url).searchParams
   try {
-    const member = await requireMember(request)
     const action = params.get("action")
-    if (request.method === "GET" && action === "session") return json({ role: member.role })
     if (request.method === "GET" && action === "list") return await listVideos(params)
     if (request.method === "GET" && action === "play") return await playVideo(params.get("id"))
+    if (request.method === "GET" && action === "session") {
+      await requireOwner(request)
+      return json({ role: "owner" })
+    }
     if (request.method === "POST" && action === "upload") {
-      if (member.role !== "owner") throw new HttpError(403)
-      return await uploadVideo(request, member.id, params.get("id"))
+      const ownerId = await requireOwner(request)
+      return await uploadVideo(request, ownerId, params.get("id"))
     }
     return json({ message: "Действие недоступно." }, 404)
   } catch (error) {

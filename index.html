@@ -9,8 +9,8 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src blob:; connect-src https://*.supabase.co; form-action 'none'; base-uri 'none'; object-src 'none'">
   <title>Видео — Video Telegram</title>
   <link rel="icon" href="./docs/video.svg">
-  <link rel="stylesheet" href="./docs/style.css">
-  <script type="module" src="./docs/app.js"></script>
+  <link rel="stylesheet" href="./docs/style.css?v=2">
+  <script type="module" src="./docs/app.js?v=2"></script>
 </head>
 <body>
   <svg class="icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -23,43 +23,42 @@
   <aside class="sidebar">
     <div class="brand"><span class="brand-icon"><svg><use href="#icon-video"/></svg></span><span>Video Telegram</span></div>
     <nav aria-label="Основное меню"><a class="nav-link" href="./" aria-current="page"><svg><use href="#icon-video"/></svg>Видеотека</a></nav>
-    <div class="sidebar-foot"><svg><use href="#icon-lock"/></svg>Закрытый доступ</div>
   </aside>
 
   <main>
     <header class="topbar">
       <span>Видеотека</span>
       <div class="toolbar">
+        <button id="owner-entry" type="button" class="subtle" hidden><svg><use href="#icon-lock"/></svg>Вход владельца</button>
         <button id="upload-open" type="button" class="primary" hidden><svg><use href="#icon-plus"/></svg>Загрузить</button>
         <button id="sign-out" type="button" class="subtle" hidden><svg><use href="#icon-exit"/></svg>Выйти</button>
       </div>
     </header>
 
-    <section id="login" class="login">
-      <div class="login-panel">
-        <span class="brand-icon"><svg><use href="#icon-lock"/></svg></span>
-        <h1>Вход в видеотеку</h1>
-        <p>Войдите с учётной записью, которой открыт доступ.</p>
-        <form id="login-form">
-          <label>Почта<input name="email" type="email" autocomplete="username" required></label>
-          <label>Пароль<input name="password" type="password" autocomplete="current-password" required></label>
-          <button class="primary" type="submit">Войти</button>
-        </form>
-        <p id="login-error" class="message" role="status"></p>
-      </div>
-    </section>
-
-    <section id="library" class="library" hidden>
+    <section id="library" class="library">
       <header class="library-header">
         <div><h1>Видеотека</h1><p id="count"></p></div>
         <label class="search"><svg><use href="#icon-search"/></svg><input id="search" type="search" aria-label="Поиск по видео" placeholder="Поиск по видео"></label>
       </header>
-      <p id="library-status" class="message" role="status" hidden></p>
+      <p id="library-status" class="message" role="status">Загружаем список…</p>
       <div id="cards" class="cards"></div>
       <div id="empty" class="empty" hidden><svg><use href="#icon-video"/></svg><h2 id="empty-title"></h2><p id="empty-detail"></p></div>
       <button id="more" class="subtle" type="button" hidden>Показать ещё</button>
     </section>
   </main>
+
+  <dialog id="owner-login" aria-labelledby="owner-title">
+    <div class="dialog-header">
+      <h2 id="owner-title">Вход владельца</h2>
+      <button type="button" class="close subtle" data-close aria-label="Закрыть">×</button>
+    </div>
+    <form id="login-form">
+      <label>Почта<input name="email" type="email" autocomplete="username" required></label>
+      <label>Пароль<input name="password" type="password" autocomplete="current-password" required></label>
+      <p id="login-error" class="message" role="status"></p>
+      <button class="primary" type="submit">Войти</button>
+    </form>
+  </dialog>
 
   <dialog id="upload-dialog" aria-labelledby="upload-title">
     <div class="dialog-header">
@@ -85,6 +84,6 @@
     <p id="player-description"></p>
     <p id="player-status" class="message" role="status"></p>
   </dialog>
-  <noscript>Для входа и воспроизведения видео требуется JavaScript.</noscript>
+  <noscript>Для загрузки каталога и воспроизведения видео требуется JavaScript.</noscript>
 </body>
 </html>
