@@ -323,24 +323,151 @@ async function requireOwner(request: Request) {
   return user.id
 }
 
-async function listVideos(params: URLSearchParams) {
+const mediaBucket = "video-library-media"
+const mediaStorage = db.storage.from(mediaBucket)
+
+function validId(id: string | null): string {
+  if (!id || !uuid.test(id)) throw new HttpError(400)
+  return id
+}
+
+async function listMedia(params: URLSearchParams, action: string) {
+  const photos = action === "photos"
+  const view = params.get("view") || "public"
   const offset = Number(params.get("offset") || 0)
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100000) throw new HttpError(400)
+  if (!["public", "hidden", "trash"].includes(view)) throw new HttpError(400)
   const search = (params.get("search") || "").trim().slice(0, 120)
-  let query = db.from("videos").select("id,title,description,created_at,size_bytes", { count: "exact" })
-    .not("telegram_message_id", "is", null).is("original_id", null)
-  if (search) query = query.ilike("title", "%" + search.replace(/[\\%_]/g, "\\$&").replaceAll("*", "\\*") + "%")
+  const fields = "id,title,description,created_at,size_bytes,hidden,deleted_at"
+  let query = db.from(photos ? "photos" : "videos").select(
+    fields + (photos ? ",width,height" : ",has_cover"), { count: "exact" },
+  )
+  if (!photos) query = query.not("telegram_message_id", "is", null).is("original_id", null)
+  if (view === "trash") query = query.not("deleted_at", "is", null)
+  else query = query.is("deleted_at", null).eq("hidden", view === "hidden")
+  if (search) query = query.ilike("title", "%" + search.replace(/[\\%_*]/g, "\\$&") + "%")
   const result = await query.order("created_at", { ascending: false }).order("id", { ascending: false })
     .range(offset, offset + pageSize - 1)
   if (result.error) throw result.error
   return json({ items: result.data, total: result.count || 0 })
 }
 
-async function readUpload(request: Request) {
+async function publishedVideo(id: string) {
+  const { data, error } = await db.from("videos")
+    .select("id,original_id,telegram_message_id,mime_type,size_bytes,has_cover,hidden,deleted_at")
+    .eq("id", id).not("telegram_message_id", "is", null).maybeSingle()
+  if (error) throw error
+  if (!data || data.hidden || data.deleted_at) throw new HttpError(404)
+  if (data.original_id) {
+    const root = await db.from("videos").select("id").eq("id", data.original_id)
+      .eq("hidden", false).is("deleted_at", null).maybeSingle()
+    if (root.error) throw root.error
+    if (!root.data) throw new HttpError(404)
+  }
+  return data
+}
+
+async function manageMedia(request: Request, id: string) {
+  const input = await request.json().catch(() => null)
+  if (!input || !["video", "photo"].includes(input.kind)) throw new HttpError(400)
+  const table = input.kind === "photo" ? "photos" : "videos"
+  const changes: Record<string, Record<string, unknown>> = {
+    hide: { hidden: true }, show: { hidden: false },
+    delete: { deleted_at: new Date().toISOString() }, restore: { deleted_at: null },
+  }
+  if (typeof input.operation !== "string" || !Object.hasOwn(changes, input.operation)) throw new HttpError(400)
+  let query = db.from(table).update(changes[input.operation]).eq("id", id)
+  if (table === "videos") query = query.is("original_id", null).not("telegram_message_id", "is", null)
+  const { data, error } = await query.select("id").maybeSingle()
+  if (error) throw error
+  if (!data) throw new HttpError(404)
+  return json({ id })
+}
+
+const photoTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif", "image/heic", "image/heif"])
+
+async function storePhoto(request: Request, id: string) {
+  const form = await readUpload(request, 27 * 1024 * 1024)
+  const photo = form.get("photo")
+  const preview = form.get("preview")
+  const rawTitle = form.get("title")
+  const title = typeof rawTitle === "string" ? rawTitle.trim() : ""
+  const description = String(form.get("description") ?? "").trim()
+  const width = Number(form.get("width"))
+  const height = Number(form.get("height"))
+  if (!(photo instanceof File) || !photoTypes.has(photo.type) || !photo.size ||
+      !(preview instanceof File) || preview.type !== "image/jpeg" || !preview.size || preview.size > 1024 * 1024 ||
+      !title || title.length > 120 || description.length > 1200 ||
+      !Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 100000 || height > 100000) {
+    throw new HttpError(400, "Проверь фото и его описание.")
+  }
+  if (photo.size > 25 * 1024 * 1024) throw new HttpError(413)
+  const existing = await db.from("photos").select("id").eq("id", id).maybeSingle()
+  if (existing.error) throw existing.error
+  if (existing.data) return json({ id })
+  const original = `photos/${id}/original`
+  const thumb = `photos/${id}/preview.jpg`
+  for (const [key, file] of [[original, photo], [thumb, preview]] as const) {
+    const result = await mediaStorage.upload(key, file, { contentType: file.type, upsert: true })
+    if (result.error) throw result.error
+  }
+  const row = await db.from("photos").insert({
+    id, title, description, filename: photo.name.slice(0, 240), mime_type: photo.type,
+    size_bytes: photo.size, width, height,
+  })
+  if (row.error && row.error.code !== "23505") throw row.error
+  return json({ id }, 201)
+}
+
+async function storeCover(request: Request, id: string) {
+  const row = await db.from("videos").select("id").eq("id", id)
+    .is("original_id", null).is("deleted_at", null).not("telegram_message_id", "is", null).maybeSingle()
+  if (row.error) throw row.error
+  if (!row.data) throw new HttpError(404)
+  const form = await readUpload(request, 1024 * 1024 + 32768)
+  const cover = form.get("cover")
+  if (!(cover instanceof File) || cover.type !== "image/jpeg" || !cover.size || cover.size > 1024 * 1024) throw new HttpError(400)
+  const result = await mediaStorage.upload(`covers/${id}.jpg`, cover, { contentType: "image/jpeg", upsert: true })
+  if (result.error) throw result.error
+  const saved = await db.from("videos").update({ has_cover: true }).eq("id", id)
+  if (saved.error) throw saved.error
+  return json({ id })
+}
+
+async function mediaAsset(params: URLSearchParams) {
+  const id = validId(params.get("id"))
+  const type = params.get("type")
+  let key: string
+  let fileName: string | undefined
+  let mime = "image/jpeg"
+  if (type === "cover") {
+    const video = await publishedVideo(id)
+    if (!video.has_cover) throw new HttpError(404)
+    key = `covers/${id}.jpg`
+  } else if (type === "preview" || type === "original") {
+    const photo = await db.from("photos").select("filename,mime_type").eq("id", id)
+      .eq("hidden", false).is("deleted_at", null).maybeSingle()
+    if (photo.error) throw photo.error
+    if (!photo.data) throw new HttpError(404)
+    key = `photos/${id}/${type === "original" ? "original" : "preview.jpg"}`
+    if (type === "original") {
+      fileName = photo.data.filename
+      mime = photo.data.mime_type
+    }
+  } else throw new HttpError(400)
+  const object = await fetch(`${Deno.env.get("SUPABASE_URL")}/storage/v1/object/authenticated/${mediaBucket}/${key}`, {
+    headers: { Authorization: `Bearer ${serverKey}`, apikey: serverKey },
+  })
+  if (!object.ok || !object.body) throw new HttpError(object.status === 404 ? 404 : 502)
+  const result = new Headers({ ...headers, "Content-Type": mime })
+  if (fileName) result.set("Content-Disposition", `attachment; filename="photo"; filename*=UTF-8''${encodeURIComponent(fileName.toWellFormed()).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16))}`)
+  return new Response(object.body, { headers: result })
+}
+
+async function readUpload(request: Request, maxBody = maxVideo + 32 * 1024) {
   const length = Number(request.headers.get("content-length"))
   const type = request.headers.get("content-type") || ""
   if (!type.toLowerCase().startsWith("multipart/form-data;")) throw new HttpError(415)
-  const maxBody = maxVideo + 32 * 1024
   if (length > maxBody) throw new HttpError(413)
   if (!request.body) throw new HttpError(400)
   const reader = request.body.getReader()
@@ -388,8 +515,9 @@ async function variantFields(params: URLSearchParams) {
 
 async function listQualities(id: string | null) {
   if (!id || !uuid.test(id)) throw new HttpError(400)
+  await publishedVideo(id)
   const result = await db.from("videos").select("id,quality_height")
-    .eq("original_id", id).not("telegram_message_id", "is", null).order("quality_height")
+    .eq("original_id", id).not("telegram_message_id", "is", null).eq("hidden", false).is("deleted_at", null).order("quality_height")
   if (result.error) throw result.error
   return json({ items: result.data })
 }
@@ -530,19 +658,15 @@ async function publishLargeVideo(request: Request, params: URLSearchParams, owne
 }
 
 async function playVideo(request: Request, id: string | null) {
-  if (!id || !uuid.test(id)) throw new HttpError(400)
-  const item = await db.from("videos").select("telegram_message_id,mime_type,size_bytes").eq("id", id)
-    .not("telegram_message_id", "is", null).maybeSingle()
-  if (item.error) throw item.error
-  if (!item.data) throw new HttpError(404, "Видео отсутствует в каталоге.")
+  const data = await publishedVideo(validId(id))
   const { client, channel } = await connectTelegram()
-  const [post] = await client.getMessages(channel, { ids: [item.data.telegram_message_id] })
+  const [post] = await client.getMessages(channel, { ids: [data.telegram_message_id] })
   if (!(post?.media instanceof Api.MessageMediaDocument) || !(post.media.document instanceof Api.Document)) {
     throw new HttpError(404, "Файл отсутствует в Telegram.")
   }
-  if (post.media.document.size.toJSNumber() !== item.data.size_bytes) throw new HttpError(502)
+  if (post.media.document.size.toJSNumber() !== data.size_bytes) throw new HttpError(502)
   const doc = post.media.document
-  const size = item.data.size_bytes
+  const size = data.size_bytes
   const range = request.headers.get("Range")
   let start = 0
   let end = size - 1
@@ -613,8 +737,8 @@ async function playVideo(request: Request, id: string | null) {
     cancel() { canceled = true },
   })
   const responseHeaders = new Headers({
-    ...headers, "Content-Type": item.data.mime_type, "Content-Length": String(remaining),
-    "Cache-Control": "public, max-age=300",
+    ...headers, "Content-Type": data.mime_type, "Content-Length": String(remaining),
+    "Cache-Control": "private, no-store",
     "Accept-Ranges": "bytes", "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges",
   })
   if (range) responseHeaders.set("Content-Range", `bytes ${start}-${end}/${size}`)
@@ -628,7 +752,18 @@ Deno.serve(async (request) => {
   const params = new URL(request.url).searchParams
   try {
     const action = params.get("action")
-    if (request.method === "GET" && action === "list") return await listVideos(params)
+    if (request.method === "GET" && (action === "list" || action === "photos")) {
+      if (params.has("view") && params.get("view") !== "public") await requireOwner(request)
+      return await listMedia(params, action)
+    }
+    if (request.method === "GET" && action === "asset") return await mediaAsset(params)
+    if (request.method === "POST" && ["photo-upload", "cover-upload", "manage"].includes(action || "")) {
+      await requireOwner(request)
+      const id = validId(params.get("id"))
+      if (action === "photo-upload") return await storePhoto(request, id)
+      if (action === "cover-upload") return await storeCover(request, id)
+      return await manageMedia(request, id)
+    }
     if (request.method === "GET" && action === "qualities") return await listQualities(params.get("id"))
     if (request.method === "GET" && action === "play") return await playVideo(request, params.get("id"))
     if ((request.method === "GET" || request.method === "POST") && action === "telegram-setup") {

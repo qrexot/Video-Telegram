@@ -6,41 +6,54 @@
   <meta name="theme-color" content="#191919">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src https://tilifwvlvomwnklviqtp.supabase.co; connect-src https://*.supabase.co; form-action 'none'; base-uri 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: https://tilifwvlvomwnklviqtp.supabase.co; media-src blob: https://tilifwvlvomwnklviqtp.supabase.co; connect-src https://*.supabase.co; form-action 'none'; base-uri 'none'; object-src 'none'">
   <title>Видео — Video Telegram</title>
   <link rel="icon" href="./video.svg">
-  <link rel="stylesheet" href="./style.css?v=7">
-  <script type="module" src="./app.js?v=8"></script>
+  <link rel="stylesheet" href="./style.css?v=9">
+  <script type="module" src="./app.js?v=9"></script>
 </head>
 <body>
   <svg class="icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <symbol id="icon-video" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="4"/><path d="m10 9 5 3-5 3z"/></symbol>
+    <symbol id="icon-play" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M8 4.8v14.4L20 12z"/></symbol>
+    <symbol id="icon-pause" viewBox="0 0 24 24"><path d="M9 5v14m6-14v14" stroke-width="3"/></symbol>
+    <symbol id="icon-volume" viewBox="0 0 24 24"><path d="M3 9h4l5-4v14l-5-4H3zM16 9a4 4 0 0 1 0 6m3-9a8 8 0 0 1 0 12"/></symbol>
+    <symbol id="icon-muted" viewBox="0 0 24 24"><path d="M3 9h4l5-4v14l-5-4H3zm13 0 5 6m0-6-5 6"/></symbol>
+    <symbol id="icon-fullscreen" viewBox="0 0 24 24"><path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"/></symbol>
+    <symbol id="icon-photo" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="9" r="1.5"/><path d="m3 17 5-4 3 2 4-4 6 6"/></symbol>
     <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></symbol>
     <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="icon-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v2"/></symbol>
     <symbol id="icon-exit" viewBox="0 0 24 24"><path d="M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h5m0-8h10m-4-4 4 4-4 4"/></symbol>
   </svg>
-  <aside class="sidebar">
-    <div class="brand"><span class="brand-icon"><svg><use href="#icon-video"/></svg></span><span>Video Telegram</span></div>
-    <nav aria-label="Основное меню"><a class="nav-link" href="./" aria-current="page"><svg><use href="#icon-video"/></svg>Видеотека</a></nav>
-  </aside>
-
-  <main>
-    <header class="topbar">
-      <span>Видеотека</span>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="./"><span class="brand-icon"><svg><use href="#icon-video"/></svg></span>Video Telegram</a>
+      <nav class="sections" aria-label="Библиотека">
+        <button id="tab-videos" class="nav-link" type="button" aria-pressed="true">Видео</button>
+        <button id="tab-photos" class="nav-link" type="button" aria-pressed="false">Фото</button>
+      </nav>
       <div class="toolbar">
-        <button id="owner-entry" type="button" class="subtle" hidden><svg><use href="#icon-lock"/></svg>Вход владельца</button>
-        <button id="upload-open" type="button" class="primary" hidden><svg><use href="#icon-plus"/></svg>Загрузить</button>
-        <button id="telegram-open" type="button" class="subtle" hidden>Telegram</button>
-        <button id="sign-out" type="button" class="subtle" hidden><svg><use href="#icon-exit"/></svg>Выйти</button>
+        <button id="owner-entry" aria-label="Вход владельца" type="button" class="subtle" hidden><svg><use href="#icon-lock"/></svg><span>Вход владельца</span></button>
+        <button id="upload-open" type="button" class="primary" hidden><svg><use href="#icon-plus"/></svg>Добавить</button>
+        <details id="owner-menu" hidden><summary>Управление</summary><div>
+          <button id="telegram-open" type="button" class="subtle">Telegram</button>
+          <button id="sign-out" type="button" class="subtle">Выйти</button>
+        </div></details>
       </div>
-    </header>
-
+    </div>
+  </header>
+  <main>
     <section id="library" class="library">
       <header class="library-header">
-        <div><h1>Видеотека</h1><p id="count"></p></div>
-        <label class="search"><svg><use href="#icon-search"/></svg><input id="search" type="search" aria-label="Поиск по видео" placeholder="Поиск по видео"></label>
+        <div><h1 id="library-title">Видеотека</h1><p id="count"></p></div>
+        <label class="search"><svg><use href="#icon-search"/></svg><input id="search" type="search" aria-label="Поиск по библиотеке" placeholder="Поиск по названию"></label>
       </header>
+      <div id="media-views" class="views" hidden aria-label="Видимость">
+        <button type="button" data-view="public" aria-pressed="true">Опубликованные</button>
+        <button type="button" data-view="hidden" aria-pressed="false">Скрытые</button>
+        <button type="button" data-view="trash" aria-pressed="false">Корзина</button>
+      </div>
       <p id="library-status" class="message" role="status">Загружаем список…</p>
       <div id="cards" class="cards"></div>
       <div id="empty" class="empty" hidden><svg><use href="#icon-video"/></svg><h2 id="empty-title"></h2><p id="empty-detail"></p></div>
@@ -85,7 +98,7 @@
       <label id="variant-field" hidden>Разрешение копии
         <select name="height"><option value="360">360p</option><option value="480">480p</option><option value="720">720p</option><option value="1080">1080p</option><option value="2160">2160p (4K)</option></select>
       </label>
-      <label>Видеофайл<input name="video" type="file" accept="video/mp4,video/webm,.mp4,.webm" required><small>MP4 или WebM, до 2 ГБ</small></label>
+      <label><span id="upload-file-label">Видеофайл</span><input name="video" type="file" accept="video/mp4,video/webm,.mp4,.webm" required><small id="file-hint">MP4 или WebM, до 2 ГБ</small></label>
       <label>Название<input name="title" maxlength="120" required></label>
       <label>Описание <span class="optional">по желанию</span><textarea name="description" rows="3" maxlength="1200"></textarea></label>
       <progress id="upload-progress" aria-label="Ход загрузки" hidden></progress>
@@ -99,22 +112,45 @@
       <h2 id="player-title"></h2>
       <button type="button" class="close subtle" data-close aria-label="Закрыть">×</button>
     </div>
-    <video id="video" controls playsinline preload="auto" hidden></video>
-    <div class="player-settings">
-      <label>Скорость
-        <select id="video-speed">
-          <option value="0.5">0,5×</option><option value="0.75">0,75×</option>
-          <option value="1" selected>1×</option><option value="1.25">1,25×</option>
-          <option value="1.5">1,5×</option><option value="2">2×</option>
-        </select>
-      </label>
-      <label>Качество
-        <select id="video-quality"><option value="">Авто</option></select>
-      </label>
+    <div id="player-shell" class="player-shell">
+      <div class="player-stage">
+        <video id="video" playsinline preload="auto" hidden></video>
+        <button id="big-play" type="button" class="big-play" aria-label="Воспроизвести"><svg aria-hidden="true"><use href="#icon-play"/></svg></button>
+        <span id="player-status" class="player-status" role="status"></span>
+      </div>
+      <div class="player-controls">
+        <input id="video-seek" type="range" min="0" max="1000" step="1" value="0" aria-label="Перемотка">
+        <div class="control-row">
+          <button id="video-toggle" type="button" aria-label="Воспроизвести"><svg aria-hidden="true"><use href="#icon-play"/></svg></button>
+          <button id="video-mute" type="button" aria-label="Выключить звук"><svg aria-hidden="true"><use href="#icon-volume"/></svg></button>
+          <span id="video-time" class="video-time">0:00 / 0:00</span>
+          <label class="control-select"><span class="sr-only">Скорость</span>
+            <select id="video-speed">
+              <option value="0.5">0,5×</option><option value="0.75">0,75×</option><option value="1" selected>1×</option>
+              <option value="1.25">1,25×</option><option value="1.5">1,5×</option><option value="2">2×</option>
+            </select>
+          </label>
+          <label class="control-select"><span class="sr-only">Качество</span>
+            <select id="video-quality"><option value="">Авто</option></select>
+          </label>
+          <button id="video-fullscreen" type="button" aria-label="Полноэкранный режим"><svg aria-hidden="true"><use href="#icon-fullscreen"/></svg></button>
+        </div>
+      </div>
     </div>
     <button id="variant-upload" class="subtle" type="button" hidden>Добавить копию другого качества</button>
     <p id="player-description"></p>
-    <p id="player-status" class="message" role="status"></p>
+    <label id="cover-edit" class="subtle cover-edit" hidden>Изменить обложку<input type="file" id="cover-file" accept="image/*"></label>
+  </dialog>
+  <dialog id="photo-dialog" class="photo-dialog" aria-labelledby="photo-title">
+    <div class="dialog-header"><h2 id="photo-title"></h2><button type="button" class="close subtle" data-close aria-label="Закрыть">×</button></div>
+    <img id="photo-preview" alt="">
+    <p id="photo-description"></p>
+    <div class="photo-actions"><span id="photo-meta"></span><a id="photo-original" class="primary">Скачать оригинал</a></div>
+  </dialog>
+  <dialog id="trash-confirm" aria-labelledby="trash-title">
+    <div class="dialog-header"><h2 id="trash-title">Удалить из библиотеки?</h2><button type="button" class="close subtle" data-close aria-label="Закрыть">×</button></div>
+    <p class="confirm-note">Файл переместится в корзину. Его можно будет восстановить из аккаунта владельца.</p>
+    <div class="confirm-actions"><button class="subtle" type="button" data-close>Отмена</button><button class="danger" id="trash-submit" type="button">В корзину</button></div>
   </dialog>
   <noscript>Для загрузки каталога и воспроизведения видео требуется JavaScript.</noscript>
 </body>

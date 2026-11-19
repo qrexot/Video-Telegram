@@ -26,6 +26,12 @@ let uploadId
 let uploadRequest
 let searchTimer
 let offset = 0
+let libraryKind = 'video'
+let libraryView = 'public'
+let uploadKind = 'video'
+let pendingTrash
+const trash = $('trash-confirm')
+const photoDialog = $('photo-dialog')
 
 class RequestError extends Error {
   constructor(message, status) {
@@ -57,7 +63,7 @@ async function responseError(response, fallback) {
 async function request(action, { method = 'GET', params = {}, body, signal, json } = {}) {
   const query = new URLSearchParams({ action, ...params })
   const headers = { apikey: config.publishableKey }
-  if (action === 'session' || action.startsWith('upload') || action === 'telegram-setup') headers.Authorization = `Bearer ${token}`
+  if (action === 'session' || action.startsWith('upload') || action === 'telegram-setup' || ['manage', 'cover-upload', 'photo-upload'].includes(action) || (params.view && params.view !== 'public')) headers.Authorization = `Bearer ${token}`
   if (json) {
     headers['Content-Type'] = 'application/json'
     body = JSON.stringify(json)
@@ -74,13 +80,15 @@ function updateOwnerControls(signedIn) {
   ownerEntry.hidden = signedIn
   signOutButton.hidden = !signedIn
   uploadButton.hidden = !signedIn
-  $('telegram-open').hidden = !signedIn
+  $('owner-menu').hidden = !signedIn
+  $('media-views').hidden = !signedIn
   updateEmptyDetail()
 }
 
 function updateEmptyDetail() {
   emptyDetail.textContent = $('search').value.trim() ? 'Попробуйте другой запрос.' :
-    uploadButton.hidden ? 'Здесь появятся загруженные видео.' : 'Нажмите «Загрузить», чтобы добавить первое видео.'
+    libraryView !== 'public' ? 'Здесь пока нет файлов.' :
+    uploadButton.hidden ? 'Здесь появятся новые публикации.' : 'Нажми «Добавить», чтобы опубликовать файл.'
 }
 
 function signOut() {
@@ -93,6 +101,13 @@ function signOut() {
   uploadForm.reset()
   uploadId = undefined
   updateOwnerControls(false)
+  libraryView = 'public'
+  updateView()
+  if (previousToken) {
+    if (trash.open) trash.close()
+    if (player.open) player.close()
+    void loadLibrary()
+  }
   if (previousToken) {
     void fetch(`${config.url}/auth/v1/logout?scope=local`, {
       method: 'POST',
@@ -136,6 +151,7 @@ async function login(event) {
     updateOwnerControls(true)
     ownerLogin.close()
     uploadButton.focus()
+    void loadLibrary()
   } catch (error) {
     signOut()
     loginForm.elements.password.value = ''
@@ -149,29 +165,132 @@ const date = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'short', yea
 const size = new Intl.NumberFormat('ru', { maximumFractionDigits: 1 })
 const svgNamespace = 'http://www.w3.org/2000/svg'
 
+function assetURL(id, type) {
+  const params = new URLSearchParams({ action: 'asset', id, type })
+  return `${config.url}/functions/v1/video?${params}`
+}
+
+function openPhoto(item) {
+  $('photo-title').textContent = item.title
+  $('photo-description').textContent = item.description
+  $('photo-meta').textContent = `${item.width} × ${item.height} · ${size.format(item.size_bytes / mebibyte)} МБ`
+  $('photo-preview').src = assetURL(item.id, 'preview')
+  $('photo-preview').alt = item.title
+  $('photo-original').href = assetURL(item.id, 'original')
+  photoDialog.showModal()
+}
+
+function updateView() {
+  $('library-title').textContent = libraryKind === 'video' ? 'Видеотека' : 'Фотографии'
+  $('tab-videos').setAttribute('aria-pressed', String(libraryKind === 'video'))
+  $('tab-photos').setAttribute('aria-pressed', String(libraryKind === 'photo'))
+  for (const button of document.querySelectorAll('[data-view]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.view === libraryView))
+  }
+}
+
+async function manageItem(id, kind, operation, button) {
+  button.disabled = true
+  try {
+    await request('manage', { method: 'POST', params: { id }, json: { kind, operation } })
+    if (trash.open) trash.close()
+    await loadLibrary()
+  } catch (error) {
+    if (trash.open) trash.close()
+    $('library-status').hidden = false
+    showError(error, $('library-status'))
+  } finally {
+    button.disabled = false
+  }
+}
+
 function renderCard(item) {
+  const kind = libraryKind
+  const isPhoto = kind === 'photo'
+  const article = document.createElement('article')
+  article.className = 'media-card'
   const card = document.createElement('button')
   card.type = 'button'
   card.className = 'card'
+  card.disabled = libraryView !== 'public'
   const cover = document.createElement('span')
   cover.className = 'cover'
   const icon = document.createElementNS(svgNamespace, 'svg')
   icon.setAttribute('aria-hidden', 'true')
   const use = document.createElementNS(svgNamespace, 'use')
-  use.setAttribute('href', '#icon-video')
+  use.setAttribute('href', isPhoto ? '#icon-photo' : '#icon-video')
   icon.append(use)
   cover.append(icon)
+  if (!card.disabled && (isPhoto || item.has_cover)) {
+    const image = document.createElement('img')
+    image.alt = ''
+    image.loading = 'lazy'
+    image.decoding = 'async'
+    image.src = assetURL(item.id, isPhoto ? 'preview' : 'cover')
+    image.addEventListener('error', () => image.remove())
+    cover.append(image)
+  }
+  if (!isPhoto && !card.disabled) {
+    const play = document.createElement('span')
+    play.className = 'cover-play'
+    play.setAttribute('aria-hidden', 'true')
+    play.textContent = '▶'
+    cover.append(play)
+  }
   const detail = document.createElement('span')
   detail.className = 'card-detail'
   const title = document.createElement('strong')
   title.textContent = item.title
   const metadata = document.createElement('span')
-  metadata.textContent = `${date.format(new Date(item.created_at))} · ${size.format(item.size_bytes / 1048576)} МБ`
+  metadata.textContent = `${date.format(new Date(item.created_at))} · ${size.format(item.size_bytes / mebibyte)} МБ`
   detail.append(title, metadata)
   card.append(cover, detail)
-  card.addEventListener('click', () => void openPlayer(item))
-  return card
+  card.addEventListener('click', () => isPhoto ? openPhoto(item) : void openPlayer(item))
+  article.append(card)
+  if (token) {
+    const actions = document.createElement('div')
+    actions.className = 'card-actions'
+    const options = item.deleted_at ? [['restore', 'Восстановить']] : [
+      item.hidden ? ['show', 'Показать'] : ['hide', 'Скрыть'], ['delete', 'Удалить'],
+    ]
+    for (const [operation, label] of options) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = operation === 'delete' ? 'danger' : 'subtle'
+      button.textContent = label
+      button.addEventListener('click', () => {
+        if (operation === 'delete') {
+          pendingTrash = { id: item.id, kind }
+          trash.showModal()
+        } else void manageItem(item.id, kind, operation, button)
+      })
+      actions.append(button)
+    }
+    article.append(actions)
+  }
+  return article
 }
+
+for (const [id, kind] of [['tab-videos', 'video'], ['tab-photos', 'photo']]) {
+  $(id).addEventListener('click', () => {
+    if (libraryKind === kind) return
+    libraryKind = kind
+    $('search').value = ''
+    updateView()
+    void loadLibrary()
+  })
+}
+for (const button of document.querySelectorAll('[data-view]')) {
+  button.addEventListener('click', () => {
+    libraryView = button.dataset.view
+    updateView()
+    void loadLibrary()
+  })
+}
+$('trash-submit').addEventListener('click', (event) => {
+  if (pendingTrash) void manageItem(pendingTrash.id, pendingTrash.kind, 'delete', event.currentTarget)
+})
+photoDialog.addEventListener('close', () => $('photo-preview').removeAttribute('src'))
 
 async function loadLibrary(append = false) {
   libraryRequest?.abort()
@@ -188,15 +307,15 @@ async function loadLibrary(append = false) {
   $('more').hidden = true
   message($('library-status'), 'Загружаем список…')
   try {
-    const response = await request('list', { params: { search, offset }, signal: controller.signal })
+    const response = await request(libraryKind === 'photo' ? 'photos' : 'list', { params: { search, offset, view: libraryView }, signal: controller.signal })
     const { items, total } = await response.json()
     if (controller.signal.aborted) return
     $('cards').append(...items.map(renderCard))
     offset += items.length
-    $('count').textContent = search ? `Найдено видео: ${total}` : `Всего видео: ${total}`
+    $('count').textContent = search ? `Найдено: ${total}` : `${libraryKind === 'photo' ? 'Фото' : 'Видео'} · ${total}`
     $('more').hidden = offset >= total || items.length < pageSize
     $('empty').hidden = total !== 0
-    $('empty-title').textContent = search ? 'Видео не найдено' : 'Видеотека пока пуста'
+    $('empty-title').textContent = search ? 'Ничего не найдено' : 'Пока пусто'
     updateEmptyDetail()
     $('library-status').hidden = true
   } catch (error) {
@@ -227,7 +346,7 @@ function playSource(id, time = 0) {
   activeSource = id
   resumePlayback = time
   message(playerStatus, 'Загружаем видео…')
-  const params = new URLSearchParams({ action: 'play', id, v: '6' })
+  const params = new URLSearchParams({ action: 'play', id, v: '9' })
   video.src = `${config.url}/functions/v1/video?${params}`
   video.playbackRate = Number(speed.value)
   if (playbackRequested && !time) void video.play().catch(() => {})
@@ -238,12 +357,16 @@ async function openPlayer(item) {
   playerRequest = controller
   playerItem = item
   $('variant-upload').hidden = !token
+  $('cover-edit').hidden = !token
+  if (item.has_cover) video.poster = assetURL(item.id, 'cover')
+  else video.removeAttribute('poster')
   $('player-title').textContent = item.title
   $('player-description').textContent = item.description
   message(playerStatus, 'Подключаем видео…')
   const automatic = new Option('Авто', '')
   quality.replaceChildren(automatic, new Option('Оригинал', item.id))
   quality.value = ''
+  updatePlayerControls()
   sources = [item]
   playbackRequested = true
   video.hidden = false
@@ -269,6 +392,66 @@ quality.addEventListener('change', () => {
   playSource(selectSource(), video.currentTime)
 })
 
+function jpegFrom(source, width, height, bound) {
+  const ratio = Math.min(1, bound / Math.max(width, height))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(width * ratio))
+  canvas.height = Math.max(1, Math.round(height * ratio))
+  const context = canvas.getContext('2d', { alpha: false })
+  context.fillStyle = '#191716'
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  context.drawImage(source, 0, 0, canvas.width, canvas.height)
+  return new Promise((resolve, reject) => canvas.toBlob(
+    (blob) => blob ? resolve(blob) : reject(new Error('No JPEG')), 'image/jpeg', .82,
+  ))
+}
+
+async function photoPreview(file) {
+  const image = await createImageBitmap(file).catch(() => null)
+  if (!image) throw new RequestError('Не удалось открыть фото в этом браузере. Попробуй JPG, PNG или WebP.', 415)
+  try {
+    return { width: image.width, height: image.height,
+      blob: await jpegFrom(image, image.width, image.height, 1400) }
+  } finally {
+    image.close()
+  }
+}
+
+async function videoCover(file) {
+  const sample = document.createElement('video')
+  sample.muted = true
+  sample.playsInline = true
+  sample.preload = 'auto'
+  const url = URL.createObjectURL(file)
+  try {
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Video frame unavailable')), 7000)
+      sample.onloadedmetadata = () => {
+        if (Number.isFinite(sample.duration) && sample.duration > .5) {
+          sample.currentTime = Math.min(2, sample.duration * .15)
+        }
+      }
+      sample.onseeked = () => { clearTimeout(timeout); resolve() }
+      sample.onloadeddata = () => {
+        if (!sample.seeking) { clearTimeout(timeout); resolve() }
+      }
+      sample.onerror = () => { clearTimeout(timeout); reject(new Error('Video decode failed')) }
+      sample.src = url
+    })
+    return await jpegFrom(sample, sample.videoWidth, sample.videoHeight, 800)
+  } finally {
+    sample.removeAttribute('src')
+    sample.load()
+    URL.revokeObjectURL(url)
+  }
+}
+
+async function putCover(id, cover, signal) {
+  const data = new FormData()
+  data.set('cover', cover, 'cover.jpg')
+  await request('cover-upload', { method: 'POST', params: { id }, body: data, signal })
+}
+
 async function upload(event) {
   event.preventDefault()
   if (!token || uploadRequest) return
@@ -279,7 +462,11 @@ async function upload(event) {
     message($('upload-status'), 'Укажи название и выбери непустой видеофайл.', true)
     return
   }
-  if (file.size > videoLimit) {
+  if (uploadKind === 'photo' && file.size > 25 * mebibyte) {
+    message($('upload-status'), 'Фото превышает 25 МБ.', true)
+    return
+  }
+  if (uploadKind === 'video' && file.size > videoLimit) {
     message($('upload-status'), `Размер файла ${size.format(file.size / 1_000_000_000)} ГБ. Лимит 2 ГБ.`, true)
     return
   }
@@ -290,12 +477,24 @@ async function upload(event) {
   const progress = $('upload-progress')
   progress.hidden = false
   progress.removeAttribute('value')
-  message($('upload-status'), 'Отправляем видео в Telegram…')
+  message($('upload-status'), uploadKind === 'photo' ? 'Готовим превью…' : 'Отправляем видео в Telegram…')
   try {
     const signal = controller.signal
     const variant = variantOriginal ? { original: variantOriginal.id, height: uploadForm.elements.height.value } : {}
     uploadId ??= crypto.randomUUID()
-    if (file.size <= smallVideoLimit) {
+    const cover = uploadKind === 'video' && !variantOriginal ? videoCover(file).catch(() => null) : null
+    if (uploadKind === 'photo') {
+      const preview = await photoPreview(file)
+      const body = new FormData()
+      body.set('title', title)
+      body.set('description', description)
+      body.set('photo', file)
+      body.set('preview', preview.blob, 'preview.jpg')
+      body.set('width', preview.width)
+      body.set('height', preview.height)
+      message($('upload-status'), 'Сохраняем фото…')
+      await request('photo-upload', { method: 'POST', params: { id: uploadId }, body, signal })
+    } else if (file.size <= smallVideoLimit) {
       const body = new FormData()
       body.set('video', file)
       body.set('title', title)
@@ -323,6 +522,12 @@ async function upload(event) {
       }
       message($('upload-status'), 'Публикуем видео…')
       await request('upload-finish', { method: 'POST', params, json: { title, description }, signal })
+    }
+    if (cover) {
+      const image = await cover
+      if (image && !signal.aborted) {
+        await putCover(uploadId, image, signal).catch(() => {})
+      }
     }
     if (controller.signal.aborted) return
     uploadId = undefined
@@ -420,15 +625,36 @@ signOutButton.addEventListener('click', () => {
 })
 function showUpload(original) {
   variantOriginal = original
+  uploadKind = original ? 'video' : libraryKind
   uploadId = undefined
   uploadForm.reset()
-  $('upload-title').textContent = original ? 'Добавить копию видео' : 'Загрузить видео'
+  const isPhoto = uploadKind === 'photo'
+  $('upload-title').textContent = original ? 'Добавить копию видео' : isPhoto ? 'Добавить фото' : 'Загрузить видео'
+  $('upload-file-label').textContent = isPhoto ? 'Фотография' : 'Видеофайл'
+  $('file-hint').textContent = isPhoto ? 'JPG, PNG, WebP, GIF или AVIF · до 25 МБ' : 'MP4 или WebM · до 2 ГБ'
+  uploadForm.elements.video.accept = isPhoto ? 'image/*' : 'video/mp4,video/webm,.mp4,.webm'
   $('variant-field').hidden = !original
   message($('upload-status'))
   $('upload-dialog').showModal()
 }
 
 $('upload-open').addEventListener('click', () => showUpload())
+$('cover-file').addEventListener('change', async (event) => {
+  const field = event.currentTarget
+  const file = field.files[0]
+  const item = playerItem
+  if (!file || !item) return
+  try {
+    const preview = await photoPreview(file)
+    await putCover(item.id, preview.blob)
+    if (playerItem === item) video.poster = assetURL(item.id, 'cover') + '&updated=' + Date.now()
+    void loadLibrary()
+  } catch (error) {
+    showError(error, playerStatus)
+  } finally {
+    field.value = ''
+  }
+})
 $('variant-upload').addEventListener('click', () => {
   if (!token || !playerItem) return
   const original = playerItem
@@ -444,14 +670,80 @@ for (const button of document.querySelectorAll('[data-close]')) {
     if (dialog.id !== 'upload-dialog' || !uploadRequest) dialog.close()
   })
 }
+const seek = $('video-seek')
+const bigPlay = $('big-play')
+const toggle = $('video-toggle')
+const mute = $('video-mute')
+let seeking = false
+
+function formatTime(time) {
+  const secs = Math.max(0, Math.floor(time || 0))
+  const hours = Math.floor(secs / 3600)
+  const mins = Math.floor(secs / 60) % 60
+  const rest = String(secs % 60).padStart(2, '0')
+  return hours ? `${hours}:${String(mins).padStart(2, '0')}:${rest}` : `${mins}:${rest}`
+}
+
+function updatePlayerControls() {
+  const duration = Number.isFinite(video.duration) ? video.duration : 0
+  if (!seeking) seek.value = duration ? Math.round(video.currentTime / duration * 1000) : 0
+  seek.disabled = !duration
+  $('video-time').textContent = `${formatTime(video.currentTime)} / ${formatTime(duration)}`
+  bigPlay.hidden = !video.paused
+  toggle.querySelector('use').setAttribute('href', video.paused ? '#icon-play' : '#icon-pause')
+  toggle.setAttribute('aria-label', video.paused ? 'Воспроизвести' : 'Пауза')
+  mute.querySelector('use').setAttribute('href', video.muted ? '#icon-muted' : '#icon-volume')
+  mute.setAttribute('aria-label', video.muted ? 'Включить звук' : 'Выключить звук')
+}
+
+function togglePlayback() {
+  if (video.paused) {
+    playbackRequested = true
+    if (activeSource) void video.play().catch(() => {})
+  } else {
+    playbackRequested = false
+    video.pause()
+  }
+}
+
+for (const control of [toggle, bigPlay, video]) control.addEventListener('click', togglePlayback)
+mute.addEventListener('click', () => { video.muted = !video.muted })
+seek.addEventListener('input', () => {
+  if (!Number.isFinite(video.duration)) return
+  seeking = true
+  $('video-time').textContent = `${formatTime(video.duration * Number(seek.value) / 1000)} / ${formatTime(video.duration)}`
+})
+seek.addEventListener('change', () => {
+  if (Number.isFinite(video.duration)) video.currentTime = video.duration * Number(seek.value) / 1000
+  seeking = false
+})
+$('video-fullscreen').addEventListener('click', () => {
+  if (document.fullscreenElement) void document.exitFullscreen()
+  else if ($('player-shell').requestFullscreen) void $('player-shell').requestFullscreen().catch(() => video.webkitEnterFullscreen?.())
+  else video.webkitEnterFullscreen?.()
+})
+for (const event of ['play', 'pause', 'ended', 'volumechange', 'loadedmetadata', 'timeupdate', 'emptied']) {
+  video.addEventListener(event, updatePlayerControls)
+}
+player.addEventListener('keydown', (event) => {
+  if (event.target.matches('input, button, select, a, textarea')) return
+  if (event.code === 'Space') {
+    event.preventDefault()
+    togglePlayback()
+  }
+})
+
 player.addEventListener('close', () => {
   playerRequest?.abort()
   playerItem = undefined
   activeSource = undefined
   resumePlayback = undefined
   playbackRequested = false
+  if (document.fullscreenElement === $('player-shell')) void document.exitFullscreen()
+  seeking = false
   video.pause()
   video.removeAttribute('src')
+  video.removeAttribute('poster')
   video.load()
   video.hidden = true
 })
@@ -489,6 +781,8 @@ $('more').addEventListener('click', () => void loadLibrary(true))
 window.addEventListener('pagehide', (event) => { if (token && !event.persisted) signOut() })
 if (config.url && config.publishableKey) {
   ownerEntry.hidden = window.top !== window.self
+  updateView()
+  updatePlayerControls()
   void loadLibrary()
 } else {
   message($('library-status'), 'Видеотека готовится к подключению.')
