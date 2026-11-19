@@ -9,8 +9,8 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src https://tilifwvlvomwnklviqtp.supabase.co; connect-src https://*.supabase.co; form-action 'none'; base-uri 'none'; object-src 'none'">
   <title>Видео — Video Telegram</title>
   <link rel="icon" href="./docs/video.svg">
-  <link rel="stylesheet" href="./docs/style.css?v=6">
-  <script type="module" src="./docs/app.js?v=6"></script>
+  <link rel="stylesheet" href="./docs/style.css?v=7">
+  <script type="module" src="./docs/app.js?v=7"></script>
 </head>
 <body>
   <svg class="icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -82,6 +82,9 @@
       <button type="button" class="close subtle" data-close aria-label="Закрыть">×</button>
     </div>
     <form id="upload-form">
+      <label id="variant-field" hidden>Разрешение копии
+        <select name="height"><option value="360">360p</option><option value="480">480p</option><option value="720">720p</option></select>
+      </label>
       <label>Видеофайл<input name="video" type="file" accept="video/mp4,video/webm,.mp4,.webm" required><small>MP4 или WebM, до 2 ГБ</small></label>
       <label>Название<input name="title" maxlength="120" required></label>
       <label>Описание <span class="optional">по желанию</span><textarea name="description" rows="3" maxlength="1200"></textarea></label>
@@ -109,6 +112,7 @@
         <select id="video-quality"><option value="">Авто</option></select>
       </label>
     </div>
+    <button id="variant-upload" class="subtle" type="button" hidden>Добавить копию другого качества</button>
     <p id="player-description"></p>
     <p id="player-status" class="message" role="status"></p>
   </dialog>

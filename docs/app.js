@@ -212,6 +212,8 @@ let sources = []
 let activeSource
 let resumePlayback
 let playbackRequested = false
+let playerItem
+let variantOriginal
 
 function selectSource() {
   if (quality.value) return quality.value
@@ -234,6 +236,8 @@ function playSource(id, time = 0) {
 async function openPlayer(item) {
   const controller = new AbortController()
   playerRequest = controller
+  playerItem = item
+  $('variant-upload').hidden = !token
   $('player-title').textContent = item.title
   $('player-description').textContent = item.description
   message(playerStatus, 'Подключаем видео…')
@@ -289,15 +293,16 @@ async function upload(event) {
   message($('upload-status'), 'Отправляем видео в Telegram…')
   try {
     const signal = controller.signal
+    const variant = variantOriginal ? { original: variantOriginal.id, height: uploadForm.elements.height.value } : {}
     uploadId ??= crypto.randomUUID()
     if (file.size <= smallVideoLimit) {
       const body = new FormData()
       body.set('video', file)
       body.set('title', title)
       body.set('description', description)
-      await request('upload', { method: 'POST', params: { id: uploadId }, body, signal })
+      await request('upload', { method: 'POST', params: { id: uploadId, ...variant }, body, signal })
     } else {
-      const params = { id: uploadId, size: file.size }
+      const params = { id: uploadId, size: file.size, ...variant }
       progress.max = file.size
       progress.value = 0
       for (let sent = 0; sent < file.size; sent += batchSize) {
@@ -413,9 +418,22 @@ signOutButton.addEventListener('click', () => {
   signOut()
   ownerEntry.focus()
 })
-$('upload-open').addEventListener('click', () => {
+function showUpload(original) {
+  variantOriginal = original
+  uploadId = undefined
+  uploadForm.reset()
+  $('upload-title').textContent = original ? 'Добавить копию видео' : 'Загрузить видео'
+  $('variant-field').hidden = !original
   message($('upload-status'))
   $('upload-dialog').showModal()
+}
+
+$('upload-open').addEventListener('click', () => showUpload())
+$('variant-upload').addEventListener('click', () => {
+  if (!token || !playerItem) return
+  const original = playerItem
+  player.close()
+  showUpload(original)
 })
 $('upload-dialog').addEventListener('cancel', (event) => {
   if (uploadRequest) event.preventDefault()
@@ -428,6 +446,7 @@ for (const button of document.querySelectorAll('[data-close]')) {
 }
 player.addEventListener('close', () => {
   playerRequest?.abort()
+  playerItem = undefined
   activeSource = undefined
   resumePlayback = undefined
   playbackRequested = false

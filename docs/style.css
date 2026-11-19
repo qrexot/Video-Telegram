@@ -98,4 +98,4 @@ progress { width: 100%; accent-color: var(--clay); }
 
 .player-settings { display: flex; flex-wrap: wrap; gap: .6rem 1rem; margin-top: .7rem; }
 .player-settings label { display: flex; gap: .5rem; align-items: center; }
-.player-settings select { color: var(--ink); background: var(--panel, #232323); border: 1px solid var(--line, #484848); border-radius: .5rem; min-height: 2.75rem; padding-inline: .65rem; font: inherit; }
+.player-settings select, #variant-field select { color: var(--ink); background: var(--panel, #232323); border: 1px solid var(--line, #484848); border-radius: .5rem; min-height: 2.75rem; padding-inline: .65rem; font: inherit; }
