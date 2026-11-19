@@ -11,7 +11,7 @@ import { Buffer } from "node:buffer"
 
 const origin = Deno.env.get("VIDEO_ORIGIN") || "https://qrexot.github.io"
 const maxVideo = 20 * 1024 * 1024
-const maxLargeVideo = 512 * 1024 * 1024
+const maxLargeVideo = 2_000_000_000
 const telegramPartSize = 512 * 1024
 const uploadBatch = 8 * telegramPartSize
 const pageSize = 24

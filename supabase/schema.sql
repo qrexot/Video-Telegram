@@ -11,7 +11,7 @@ create table public.videos (
   title text not null check (char_length(btrim(title)) between 1 and 120),
   description text not null default '' check (char_length(description) <= 1200),
   mime_type text not null check (mime_type in ('video/mp4', 'video/webm')),
-  size_bytes integer not null check (size_bytes between 1 and 536870912),
+  size_bytes integer not null check (size_bytes between 1 and 2000000000),
   telegram_message_id integer unique check (telegram_message_id > 0),
   created_at timestamptz not null default now()
 );

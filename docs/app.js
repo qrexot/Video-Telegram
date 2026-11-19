@@ -18,7 +18,7 @@ const video = $('video')
 const pageSize = 24
 const mebibyte = 1024 * 1024
 const smallVideoLimit = 20 * mebibyte
-const videoLimit = 512 * mebibyte
+const videoLimit = 2_000_000_000
 const batchSize = 4 * mebibyte
 let token = ''
 let libraryRequest
@@ -225,7 +225,7 @@ async function upload(event) {
     return
   }
   if (file.size > videoLimit) {
-    message($('upload-status'), `Размер файла ${size.format(file.size / mebibyte)} МБ. Лимит 512 МБ.`, true)
+    message($('upload-status'), `Размер файла ${size.format(file.size / 1_000_000_000)} ГБ. Лимит 2 ГБ.`, true)
     return
   }
 
@@ -251,7 +251,17 @@ async function upload(event) {
       progress.value = 0
       for (let sent = 0; sent < file.size; sent += batchSize) {
         const chunk = file.slice(sent, sent + batchSize)
-        await request('upload-part', { method: 'POST', params: { ...params, offset: sent }, body: chunk, signal })
+        for (let attempt = 1; ; attempt++) {
+          try {
+            await request('upload-part', { method: 'POST', params: { ...params, offset: sent }, body: chunk, signal })
+            break
+          } catch (error) {
+            const temporary = error instanceof TypeError || [408, 500, 502, 503, 504].includes(error.status)
+            if (!temporary || attempt >= 3 || signal.aborted) throw error
+            message($('upload-status'), 'Повторяем отправку части видео…')
+            await new Promise((resolve) => setTimeout(resolve, attempt * 1000))
+          }
+        }
         progress.value = sent + chunk.size
         message($('upload-status'), `Загружено ${Math.floor(100 * progress.value / file.size)}%`)
       }

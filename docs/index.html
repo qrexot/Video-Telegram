@@ -10,7 +10,7 @@
   <title>Видео — Video Telegram</title>
   <link rel="icon" href="./video.svg">
   <link rel="stylesheet" href="./style.css?v=3">
-  <script type="module" src="./app.js?v=4"></script>
+  <script type="module" src="./app.js?v=5"></script>
 </head>
 <body>
   <svg class="icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -82,7 +82,7 @@
       <button type="button" class="close subtle" data-close aria-label="Закрыть">×</button>
     </div>
     <form id="upload-form">
-      <label>Видеофайл<input name="video" type="file" accept="video/mp4,video/webm,.mp4,.webm" required><small>MP4 или WebM, до 512 МБ</small></label>
+      <label>Видеофайл<input name="video" type="file" accept="video/mp4,video/webm,.mp4,.webm" required><small>MP4 или WebM, до 2 ГБ</small></label>
       <label>Название<input name="title" maxlength="120" required></label>
       <label>Описание <span class="optional">по желанию</span><textarea name="description" rows="3" maxlength="1200"></textarea></label>
       <progress id="upload-progress" aria-label="Ход загрузки" hidden></progress>
