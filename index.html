@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#191919">
+  <meta name="theme-color" content="#18191b">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: https://tilifwvlvomwnklviqtp.supabase.co; media-src blob: https://tilifwvlvomwnklviqtp.supabase.co; connect-src https://*.supabase.co; form-action 'none'; base-uri 'none'; object-src 'none'">
-  <title>Видео — Video Telegram</title>
+  <title>Video Telegram — медиатека</title>
   <link rel="icon" href="./docs/video.svg">
-  <link rel="stylesheet" href="./docs/style.css?v=9">
-  <script type="module" src="./docs/app.js?v=12"></script>
+  <link rel="stylesheet" href="./docs/style.css?v=13">
+  <script type="module" src="./docs/app.js?v=13"></script>
 </head>
 <body>
   <svg class="icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -24,19 +24,21 @@
     <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></symbol>
     <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="icon-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v2"/></symbol>
+    <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 7h4m4 0h8M4 12h10m4 0h2M4 17h2m4 0h10"/><circle cx="10" cy="7" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="8" cy="17" r="2"/></symbol>
     <symbol id="icon-exit" viewBox="0 0 24 24"><path d="M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h5m0-8h10m-4-4 4 4-4 4"/></symbol>
   </svg>
   <header class="site-header">
     <div class="header-inner">
       <a class="brand" href="./"><span class="brand-icon"><svg><use href="#icon-video"/></svg></span>Video Telegram</a>
       <nav class="sections" aria-label="Библиотека">
-        <button id="tab-videos" class="nav-link" type="button" aria-pressed="true">Видео</button>
-        <button id="tab-photos" class="nav-link" type="button" aria-pressed="false">Фото</button>
+        <button id="tab-videos" class="nav-link" type="button" aria-pressed="true"><svg aria-hidden="true"><use href="#icon-video"/></svg>Видео</button>
+        <button id="tab-photos" class="nav-link" type="button" aria-pressed="false"><svg aria-hidden="true"><use href="#icon-photo"/></svg>Фото</button>
       </nav>
       <div class="toolbar">
         <button id="owner-entry" aria-label="Вход владельца" type="button" class="subtle" hidden><svg><use href="#icon-lock"/></svg><span>Вход владельца</span></button>
         <button id="upload-open" type="button" class="primary" hidden><svg><use href="#icon-plus"/></svg>Добавить</button>
-        <details id="owner-menu" hidden><summary>Управление</summary><div>
+        <details id="owner-menu" hidden><summary aria-label="Управление"><svg aria-hidden="true"><use href="#icon-settings"/></svg><span>Управление</span></summary><div>
           <button id="telegram-open" type="button" class="subtle">Telegram</button>
           <button id="sign-out" type="button" class="subtle">Выйти</button>
         </div></details>
@@ -46,7 +48,7 @@
   <main>
     <section id="library" class="library">
       <header class="library-header">
-        <div><h1 id="library-title">Видеотека</h1><p id="count"></p></div>
+        <div class="library-heading"><h1 id="library-title">Видеотека</h1><p id="count"></p></div>
         <label class="search"><svg><use href="#icon-search"/></svg><input id="search" type="search" aria-label="Поиск по библиотеке" placeholder="Поиск по названию"></label>
       </header>
       <div id="media-views" class="views" hidden aria-label="Видимость">
@@ -64,7 +66,7 @@
   <dialog id="owner-login" aria-labelledby="owner-title">
     <div class="dialog-header">
       <h2 id="owner-title">Вход владельца</h2>
-      <button type="button" class="close subtle" data-close aria-label="Закрыть">×</button>
+      <button type="button" class="close subtle" data-close aria-label="Закрыть"><svg aria-hidden="true"><use href="#icon-close"/></svg></button>
     </div>
     <form id="login-form">
       <label>Почта<input name="email" type="email" autocomplete="username" required></label>
@@ -77,7 +79,7 @@
   <dialog id="telegram-dialog" aria-labelledby="telegram-title">
     <div class="dialog-header">
       <h2 id="telegram-title">Подключение Telegram</h2>
-      <button type="button" class="close subtle" data-close aria-label="Закрыть">×</button>
+      <button type="button" class="close subtle" data-close aria-label="Закрыть"><svg aria-hidden="true"><use href="#icon-close"/></svg></button>
     </div>
     <p id="telegram-message" class="message" role="status"></p>
     <form id="telegram-form" hidden>
@@ -92,7 +94,7 @@
   <dialog id="upload-dialog" aria-labelledby="upload-title">
     <div class="dialog-header">
       <h2 id="upload-title">Загрузить видео</h2>
-      <button type="button" class="close subtle" data-close aria-label="Закрыть">×</button>
+      <button type="button" class="close subtle" data-close aria-label="Закрыть"><svg aria-hidden="true"><use href="#icon-close"/></svg></button>
     </div>
     <form id="upload-form">
       <label id="variant-field" hidden>Разрешение копии
@@ -110,7 +112,7 @@
   <dialog id="player" class="player-dialog" aria-labelledby="player-title">
     <div class="dialog-header">
       <h2 id="player-title"></h2>
-      <button type="button" class="close subtle" data-close aria-label="Закрыть">×</button>
+      <button type="button" class="close subtle" data-close aria-label="Закрыть"><svg aria-hidden="true"><use href="#icon-close"/></svg></button>
     </div>
     <div id="player-shell" class="player-shell">
       <div class="player-stage">
@@ -119,7 +121,10 @@
         <span id="player-status" class="player-status" role="status"></span>
       </div>
       <div class="player-controls">
-        <input id="video-seek" type="range" min="0" max="1000" step="1" value="0" aria-label="Перемотка">
+        <div class="seek-track">
+          <progress id="seek-progress" class="seek-progress" max="1000" value="0" aria-hidden="true"></progress>
+          <input id="video-seek" type="range" min="0" max="1000" step="1" value="0" aria-label="Перемотка">
+        </div>
         <div class="control-row">
           <button id="video-toggle" type="button" aria-label="Воспроизвести"><svg aria-hidden="true"><use href="#icon-play"/></svg></button>
           <button id="video-mute" type="button" aria-label="Выключить звук"><svg aria-hidden="true"><use href="#icon-volume"/></svg></button>
@@ -142,7 +147,7 @@
     <label id="cover-edit" class="subtle cover-edit" hidden>Изменить обложку<input type="file" id="cover-file" accept="image/*"></label>
   </dialog>
   <dialog id="photo-dialog" class="photo-dialog" aria-labelledby="photo-title">
-    <div class="dialog-header"><h2 id="photo-title"></h2><button type="button" class="close subtle" data-close aria-label="Закрыть">×</button></div>
+    <div class="dialog-header"><h2 id="photo-title"></h2><button type="button" class="close subtle" data-close aria-label="Закрыть"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></div>
     <p id="photo-preview-status" class="message" role="status"></p>
     <img id="photo-preview" alt="" hidden>
     <p id="photo-description"></p>
@@ -151,7 +156,7 @@
   <dialog id="edit-dialog" aria-labelledby="edit-title">
     <div class="dialog-header">
       <h2 id="edit-title">Редактировать публикацию</h2>
-      <button type="button" class="close subtle" data-close aria-label="Закрыть">×</button>
+      <button type="button" class="close subtle" data-close aria-label="Закрыть"><svg aria-hidden="true"><use href="#icon-close"/></svg></button>
     </div>
     <form id="edit-form">
       <label>Название<input name="title" maxlength="120" required></label>
@@ -161,7 +166,7 @@
     </form>
   </dialog>
   <dialog id="trash-confirm" aria-labelledby="trash-title">
-    <div class="dialog-header"><h2 id="trash-title">Удалить из библиотеки?</h2><button type="button" class="close subtle" data-close aria-label="Закрыть">×</button></div>
+    <div class="dialog-header"><h2 id="trash-title">Удалить из библиотеки?</h2><button type="button" class="close subtle" data-close aria-label="Закрыть"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></div>
     <p class="confirm-note">Файл переместится в корзину. Его можно будет восстановить из аккаунта владельца.</p>
     <div class="confirm-actions"><button class="subtle" type="button" data-close>Отмена</button><button class="danger" id="trash-submit" type="button">В корзину</button></div>
   </dialog>

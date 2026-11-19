@@ -222,6 +222,7 @@ function renderCard(item) {
   const isPhoto = kind === 'photo'
   const article = document.createElement('article')
   article.className = 'media-card'
+  article.dataset.kind = kind
   const card = document.createElement('button')
   card.type = 'button'
   card.className = 'card'
@@ -247,7 +248,11 @@ function renderCard(item) {
     const play = document.createElement('span')
     play.className = 'cover-play'
     play.setAttribute('aria-hidden', 'true')
-    play.textContent = '▶'
+    const symbol = document.createElementNS(svgNamespace, 'svg')
+    const glyph = document.createElementNS(svgNamespace, 'use')
+    glyph.setAttribute('href', '#icon-play')
+    symbol.append(glyph)
+    play.append(symbol)
     cover.append(play)
   }
   const detail = document.createElement('span')
@@ -770,6 +775,8 @@ for (const button of document.querySelectorAll('[data-close]')) {
   })
 }
 const seek = $('video-seek')
+const seekProgress = $('seek-progress')
+const playerStage = video.closest('.player-stage')
 const bigPlay = $('big-play')
 const toggle = $('video-toggle')
 const mute = $('video-mute')
@@ -786,6 +793,7 @@ function formatTime(time) {
 function updatePlayerControls() {
   const duration = Number.isFinite(video.duration) ? video.duration : 0
   if (!seeking) seek.value = duration ? Math.round(video.currentTime / duration * 1000) : 0
+  seekProgress.value = Number(seek.value)
   seek.disabled = !duration
   $('video-time').textContent = `${formatTime(video.currentTime)} / ${formatTime(duration)}`
   bigPlay.hidden = !video.paused
@@ -810,6 +818,7 @@ mute.addEventListener('click', () => { video.muted = !video.muted })
 seek.addEventListener('input', () => {
   if (!Number.isFinite(video.duration)) return
   seeking = true
+  seekProgress.value = Number(seek.value)
   $('video-time').textContent = `${formatTime(video.duration * Number(seek.value) / 1000)} / ${formatTime(video.duration)}`
 })
 seek.addEventListener('change', () => {
@@ -840,6 +849,7 @@ player.addEventListener('close', () => {
   playbackRequested = false
   if (document.fullscreenElement === $('player-shell')) void document.exitFullscreen()
   seeking = false
+  delete playerStage.dataset.orientation
   video.pause()
   video.removeAttribute('src')
   video.removeAttribute('poster')
@@ -847,6 +857,7 @@ player.addEventListener('close', () => {
   video.hidden = true
 })
 video.addEventListener('loadedmetadata', () => {
+  playerStage.dataset.orientation = video.videoHeight > video.videoWidth ? 'portrait' : 'landscape'
   if (resumePlayback && Number.isFinite(video.duration)) {
     video.currentTime = Math.min(resumePlayback, video.duration)
   }
