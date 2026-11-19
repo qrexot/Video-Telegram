@@ -9,8 +9,8 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src blob:; connect-src https://*.supabase.co; form-action 'none'; base-uri 'none'; object-src 'none'">
   <title>Видео — Video Telegram</title>
   <link rel="icon" href="./video.svg">
-  <link rel="stylesheet" href="./style.css?v=2">
-  <script type="module" src="./app.js?v=2"></script>
+  <link rel="stylesheet" href="./style.css?v=3">
+  <script type="module" src="./app.js?v=3"></script>
 </head>
 <body>
   <svg class="icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -31,6 +31,7 @@
       <div class="toolbar">
         <button id="owner-entry" type="button" class="subtle" hidden><svg><use href="#icon-lock"/></svg>Вход владельца</button>
         <button id="upload-open" type="button" class="primary" hidden><svg><use href="#icon-plus"/></svg>Загрузить</button>
+        <button id="telegram-open" type="button" class="subtle" hidden>Telegram</button>
         <button id="sign-out" type="button" class="subtle" hidden><svg><use href="#icon-exit"/></svg>Выйти</button>
       </div>
     </header>
@@ -57,6 +58,21 @@
       <label>Пароль<input name="password" type="password" autocomplete="current-password" required></label>
       <p id="login-error" class="message" role="status"></p>
       <button class="primary" type="submit">Войти</button>
+    </form>
+  </dialog>
+
+  <dialog id="telegram-dialog" aria-labelledby="telegram-title">
+    <div class="dialog-header">
+      <h2 id="telegram-title">Подключение Telegram</h2>
+      <button type="button" class="close subtle" data-close aria-label="Закрыть">×</button>
+    </div>
+    <p id="telegram-message" class="message" role="status"></p>
+    <form id="telegram-form" hidden>
+      <label id="telegram-field" hidden><span id="telegram-label"></span>
+        <input name="confirmation" autocomplete="one-time-code" maxlength="512">
+      </label>
+      <button type="submit" class="primary" id="telegram-submit">Отправить код</button>
+      <button type="button" class="subtle" id="telegram-restart" hidden>Запросить новый код</button>
     </form>
   </dialog>
 

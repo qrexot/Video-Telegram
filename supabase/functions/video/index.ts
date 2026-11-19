@@ -3,7 +3,8 @@ import { Api, TelegramClient } from "npm:telegram@2.26.22"
 import { StringSession } from "npm:telegram@2.26.22/sessions/index.js"
 import { CustomFile } from "npm:telegram@2.26.22/client/uploads.js"
 import { Logger, LogLevel } from "npm:telegram@2.26.22/extensions/Logger.js"
-import { PromisedWebSockets } from "npm:telegram@2.26.22/extensions/PromisedWebSockets.js"
+import type { PromisedWebSockets } from "npm:telegram@2.26.22/extensions/PromisedWebSockets.js"
+import { computeCheck } from "npm:telegram@2.26.22/Password.js"
 import { ConnectionTCPObfuscated } from "npm:telegram@2.26.22/network/connection/index.js"
 import bigInt from "npm:big-integer@1.6.52"
 import { Buffer } from "node:buffer"
@@ -12,7 +13,8 @@ const origin = Deno.env.get("VIDEO_ORIGIN") || "https://qrexot.github.io"
 const maxVideo = 20 * 1024 * 1024
 const pageSize = 24
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
+const serverKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+const db = createClient(Deno.env.get("SUPABASE_URL")!, serverKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 })
 const headers = {
@@ -39,34 +41,155 @@ class WebTelegramClient extends TelegramClient {
   }
 }
 
+// Use the runtime WebSocket so Telegram connects over TLS without raw TCP.
+class TelegramSocket {
+  private socket?: WebSocket
+  private chunks: Buffer[] = []
+  private pending?: () => void
+
+  async connect(port: number, host: string, testServers = false) {
+    const socket = new WebSocket(`wss://${host}:${port}/apiws${testServers ? "_test" : ""}`, "binary")
+    socket.binaryType = "arraybuffer"
+    this.socket = socket
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => { socket.close(); reject(new Error("Telegram connection timed out")) }, 10000)
+      socket.onopen = () => { clearTimeout(timeout); resolve() }
+      socket.onerror = () => { clearTimeout(timeout); reject(new Error("Telegram connection failed")) }
+      socket.onclose = () => {
+        clearTimeout(timeout)
+        this.pending?.()
+        reject(new Error("Telegram connection closed"))
+      }
+      socket.onmessage = (event) => {
+        this.chunks.push(Buffer.from(event.data as ArrayBuffer))
+        this.pending?.()
+      }
+    })
+    return this
+  }
+
+  async read(number: number) {
+    while (!this.chunks.length) {
+      if (this.socket?.readyState !== WebSocket.OPEN) throw new Error("Telegram connection closed")
+      await new Promise<void>((resolve) => { this.pending = resolve })
+      this.pending = undefined
+    }
+    const chunk = this.chunks[0]
+    if (chunk.length <= number) return this.chunks.shift()!
+    this.chunks[0] = chunk.subarray(number)
+    return chunk.subarray(0, number)
+  }
+
+  async readExactly(number: number) {
+    const chunks: Buffer[] = []
+    while (number > 0) {
+      const chunk = await this.read(number)
+      chunks.push(chunk)
+      number -= chunk.length
+    }
+    return Buffer.concat(chunks)
+  }
+
+  async readAll() {
+    const head = await this.read(Number.MAX_SAFE_INTEGER)
+    return Buffer.concat([head, ...this.chunks.splice(0)])
+  }
+
+  write(data: Buffer) {
+    if (this.socket?.readyState !== WebSocket.OPEN) throw new Error("Telegram connection closed")
+    this.socket.send(new Uint8Array(data))
+  }
+
+  async close() {
+    this.socket?.close()
+    this.pending?.()
+  }
+}
+
+type TelegramState = {
+  apiId: number
+  apiHash: string
+  phone: string
+  channelId: string
+  session?: string
+  channelHash?: string
+  codeHash?: string
+  step?: "code" | "password"
+  expires?: number
+  retryAfter?: number
+  busyUntil?: number
+}
+
+const setupTable = "video_telegram_setup"
+const stateKey = crypto.subtle.digest("SHA-256", new TextEncoder().encode(`video-telegram-setup/v1:${serverKey}`))
+  .then((hash) => crypto.subtle.importKey("raw", hash, "AES-GCM", false, ["encrypt", "decrypt"]))
+
+async function encryptState(userId: string, state: TelegramState) {
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const data = new TextEncoder().encode(JSON.stringify(state))
+  const extra = new TextEncoder().encode(userId)
+  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: extra }, await stateKey, data)
+  return Buffer.concat([iv, new Uint8Array(sealed)]).toString("base64")
+}
+
+async function decryptState(userId: string, encoded: string): Promise<TelegramState> {
+  const bytes = new Uint8Array(Buffer.from(encoded, "base64"))
+  const extra = new TextEncoder().encode(userId)
+  const plaintext = await crypto.subtle.decrypt({
+    name: "AES-GCM", iv: bytes.slice(0, 12), additionalData: extra,
+  }, await stateKey, bytes.slice(12))
+  return JSON.parse(new TextDecoder().decode(plaintext))
+}
+
+function clientFor(state: TelegramState) {
+  const session = new StringSession(state.session || "")
+  if (!state.session) session.setDC(4, "vesta.web.telegram.org", 443)
+  const client = new WebTelegramClient(session, state.apiId, state.apiHash, {
+    connection: ConnectionTCPObfuscated,
+    networkSocket: TelegramSocket as unknown as typeof PromisedWebSockets,
+    connectionRetries: 1, requestRetries: 2, useWSS: true, autoReconnect: false,
+    floodSleepThreshold: 0, baseLogger: new Logger(LogLevel.NONE), deviceModel: "Video Telegram",
+  })
+  return { client, session }
+}
+
 let telegramPromise: Promise<TelegramConnection> | undefined
 
-function connectTelegram() {
+async function storageState(): Promise<TelegramState> {
   const apiId = Number(Deno.env.get("TELEGRAM_API_ID"))
   const apiHash = Deno.env.get("TELEGRAM_API_HASH")
   const session = Deno.env.get("TELEGRAM_SESSION")
   const channelId = Deno.env.get("TELEGRAM_CHANNEL_ID")
   const channelHash = Deno.env.get("TELEGRAM_CHANNEL_HASH")
-  if (!Number.isSafeInteger(apiId) || apiId <= 0 || !apiHash || !session || !channelId || !channelHash) {
-    throw new HttpError(503)
+  if (apiId && apiHash && session && channelId && channelHash) {
+    return { apiId, apiHash, session, channelId, channelHash, phone: "" }
   }
+  const { data, error } = await db.from(setupTable).select("user_id,encrypted_state")
+    .order("user_id").limit(12)
+  if (error) throw error
+  for (const row of data) {
+    const state = await decryptState(row.user_id, row.encrypted_state)
+    if (state.session && state.channelHash) return state
+  }
+  throw new HttpError(503)
+}
+
+function connectTelegram() {
   if (!telegramPromise) {
     telegramPromise = (async () => {
-      const auth = new StringSession(session)
-      const client = new WebTelegramClient(auth, apiId, apiHash, {
-        connection: ConnectionTCPObfuscated, networkSocket: PromisedWebSockets,
-        connectionRetries: 1, requestRetries: 2, useWSS: true, autoReconnect: true,
-        floodSleepThreshold: 0, baseLogger: new Logger(LogLevel.NONE),
-      })
+      const state = await storageState()
+      const { client, session } = clientFor(state)
       try {
-        const dc = await client.getDC(auth.dcId)
-        auth.setDC(dc.id, dc.ipAddress, dc.port)
+        const dc = await client.getDC(session.dcId)
+        session.setDC(dc.id, dc.ipAddress, dc.port)
         await client.connect()
-        if (!(await client.checkAuthorization())) throw new Error("not authorized")
-        const channel = new Api.InputPeerChannel({ channelId: bigInt(channelId), accessHash: bigInt(channelHash) })
+        if (!(await client.checkAuthorization())) throw new Error("Telegram session expired")
+        const channel = new Api.InputPeerChannel({
+          channelId: bigInt(state.channelId), accessHash: bigInt(state.channelHash!),
+        })
         return { client, channel }
       } catch {
-        await client.disconnect().catch(() => {})
+        await client.destroy().catch(() => {})
         throw new HttpError(503)
       }
     })().catch((error) => {
@@ -75,6 +198,113 @@ function connectTelegram() {
     })
   }
   return telegramPromise
+}
+
+function setupStatus(state?: TelegramState) {
+  const step = state?.channelHash ? "connected" :
+    (state?.expires ?? 0) > Date.now() ? state?.step : undefined
+  return json({ step: step ?? (state ? "ready" : "unconfigured") })
+}
+
+async function setupTelegram(request: Request, ownerId: string) {
+  const { data: row, error } = await db.from(setupTable).select("revision,encrypted_state")
+    .eq("user_id", ownerId).maybeSingle()
+  if (error) throw error
+  if (request.method === "GET") return setupStatus(row ? await decryptState(ownerId, row.encrypted_state) : undefined)
+
+  const input = await request.json().catch(() => null)
+  if (!input || typeof input !== "object") throw new HttpError(400)
+  if (input?.action === "configure") {
+    if (row) throw new HttpError(409)
+    const { apiId, apiHash, phone, channelId } = input
+    if (!Number.isSafeInteger(apiId) || apiId < 1 || apiId > 2147483647 ||
+        typeof apiHash !== "string" || !/^[a-f0-9]{32}$/i.test(apiHash) ||
+        typeof phone !== "string" || !/^\+\d{7,15}$/.test(phone) ||
+        typeof channelId !== "string" || !/^\d{1,15}$/.test(channelId)) throw new HttpError(400)
+    const state = { apiId, apiHash, phone, channelId }
+    const saved = await db.from(setupTable).insert({ user_id: ownerId, encrypted_state: await encryptState(ownerId, state) })
+    if (saved.error) throw saved.error
+    return setupStatus(state)
+  }
+  if (!row) throw new HttpError(400, "Сначала укажите данные Telegram.")
+  const state = await decryptState(ownerId, row.encrypted_state)
+  if (state.channelHash) return setupStatus(state)
+
+  const now = Date.now()
+  const start = input?.action === "start"
+  if (!start && !["code", "password"].includes(input?.action)) throw new HttpError(400)
+  if ((state.busyUntil ?? 0) > now) throw new HttpError(409, "Telegram уже обрабатывает запрос.")
+  if (start && (state.retryAfter ?? 0) > now) throw new HttpError(429)
+  if (!start && ((state.expires ?? 0) <= now || state.step !== input.action || !state.session)) {
+    throw new HttpError(400, "Срок действия входа истёк. Запросите новый код.")
+  }
+  if (input.action === "code" && (typeof input.value !== "string" || !/^\d{4,8}$/.test(input.value))) {
+    throw new HttpError(400, "Введите код из Telegram.")
+  }
+  if (input.action === "password" && (typeof input.value !== "string" || !input.value || input.value.length > 512)) {
+    throw new HttpError(400, "Введите пароль Telegram.")
+  }
+  const revision = row.revision + 1
+  const reserved = await db.from(setupTable).update({
+    revision, encrypted_state: await encryptState(ownerId, { ...state, busyUntil: now + 90000, retryAfter: start ? now + 60000 : state.retryAfter }),
+  }).eq("user_id", ownerId).eq("revision", row.revision).select("revision").maybeSingle()
+  if (reserved.error) throw reserved.error
+  if (!reserved.data) throw new HttpError(409)
+  const save = async (next: TelegramState) => {
+    const saved = await db.from(setupTable).update({ encrypted_state: await encryptState(ownerId, { ...next, busyUntil: undefined }) })
+      .eq("user_id", ownerId).eq("revision", revision).select("revision").maybeSingle()
+    if (saved.error) throw saved.error
+    if (!saved.data) throw new HttpError(409)
+    return setupStatus(next)
+  }
+  const { client, session } = clientFor(state)
+  try {
+    await client.connect()
+    if (start) {
+      const { phoneCodeHash } = await client.sendCode({ apiId: state.apiId, apiHash: state.apiHash }, state.phone)
+      return await save({
+        ...state, session: session.save(), step: "code", codeHash: phoneCodeHash,
+        expires: now + 5 * 60000, retryAfter: now + 60000,
+      })
+    }
+    if (input.action === "code") {
+      try {
+        await client.invoke(new Api.auth.SignIn({ phoneNumber: state.phone, phoneCodeHash: state.codeHash!, phoneCode: input.value }))
+      } catch (error) {
+        if ((error as { errorMessage?: string }).errorMessage !== "SESSION_PASSWORD_NEEDED") throw error
+        return await save({ ...state, session: session.save(), step: "password", codeHash: undefined })
+      }
+    } else {
+      const challenge = await client.invoke(new Api.account.GetPassword())
+      await client.invoke(new Api.auth.CheckPassword({ password: await computeCheck(challenge, input.value) }))
+    }
+
+    for await (const dialog of client.iterDialogs({})) {
+      const channel = dialog.entity
+      if (channel instanceof Api.Channel && channel.id.toString() === state.channelId &&
+          channel.broadcast && (channel.creator || channel.adminRights?.postMessages) &&
+          !channel.username && !channel.usernames?.some((username) => username.active) && channel.accessHash) {
+        return await save({
+          apiId: state.apiId, apiHash: state.apiHash, phone: state.phone, channelId: state.channelId,
+          session: session.save(), channelHash: channel.accessHash.toString(),
+        })
+      }
+    }
+    await client.invoke(new Api.auth.LogOut()).catch(() => {})
+    throw new HttpError(400, "Этот аккаунт не может публиковать видео в указанном закрытом канале.")
+  } catch (error) {
+    await save({ ...state, retryAfter: start ? now + 60000 : state.retryAfter }).catch(() => {})
+    if (error instanceof HttpError) throw error
+    const code = (error as { errorMessage?: string }).errorMessage
+    if (code === "PHONE_CODE_INVALID") throw new HttpError(400, "Неверный код из Telegram.")
+    if (code === "PHONE_CODE_EXPIRED") throw new HttpError(400, "Код истёк. Запросите новый.")
+    if (code === "PASSWORD_HASH_INVALID") throw new HttpError(400, "Неверный пароль Telegram.")
+    if (code?.includes("FLOOD")) throw new HttpError(429, "Telegram ограничил число попыток. Попробуйте позже.")
+    console.error("Telegram setup failed", code ?? (error instanceof Error ? error.name : "unknown"))
+    throw new HttpError(502, "Telegram не завершил вход. Попробуйте ещё раз.")
+  } finally {
+    await client.destroy().catch(() => {})
+  }
 }
 
 async function requireOwner(request: Request) {
@@ -227,6 +457,10 @@ Deno.serve(async (request) => {
     const action = params.get("action")
     if (request.method === "GET" && action === "list") return await listVideos(params)
     if (request.method === "GET" && action === "play") return await playVideo(params.get("id"))
+    if ((request.method === "GET" || request.method === "POST") && action === "telegram-setup") {
+      const ownerId = await requireOwner(request)
+      return await setupTelegram(request, ownerId)
+    }
     if (request.method === "GET" && action === "session") {
       await requireOwner(request)
       return json({ role: "owner" })

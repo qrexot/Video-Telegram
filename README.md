@@ -14,7 +14,9 @@
 
 ## Закрытый Telegram-канал
 
-Для подключения используйте отдельный Telegram-аккаунт и его собственные API ID и API Hash. В папке проекта запустите команду через Deno 2.
+После входа владельца откройте «Telegram» в видеотеке. Если параметры канала уже заданы, запросите код и подтвердите вход там же.
+
+Для ручной настройки используйте Telegram-аккаунт и его собственные API ID и API Hash. В папке проекта запустите команду через Deno 2.
 
 ```sh
 deno run --allow-net --allow-env --allow-read --allow-write=telegram-secrets.env --allow-sys tools/telegram-setup.ts

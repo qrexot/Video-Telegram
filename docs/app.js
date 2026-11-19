@@ -8,6 +8,11 @@ const uploadButton = $('upload-open')
 const signOutButton = $('sign-out')
 const emptyDetail = $('empty-detail')
 const uploadForm = $('upload-form')
+const telegramDialog = $('telegram-dialog')
+const telegramForm = $('telegram-form')
+const telegramMessage = $('telegram-message')
+let telegramStep = ''
+let telegramRequest
 const player = $('player')
 const video = $('video')
 const pageSize = 24
@@ -47,10 +52,14 @@ async function responseError(response, fallback) {
   return new RequestError(statusMessages[response.status] ?? data?.message ?? fallback, response.status)
 }
 
-async function request(action, { method = 'GET', params = {}, body, signal } = {}) {
+async function request(action, { method = 'GET', params = {}, body, signal, json } = {}) {
   const query = new URLSearchParams({ action, ...params })
   const headers = { apikey: config.publishableKey }
-  if (action === 'session' || action === 'upload') headers.Authorization = `Bearer ${token}`
+  if (action === 'session' || action === 'upload' || action === 'telegram-setup') headers.Authorization = `Bearer ${token}`
+  if (json) {
+    headers['Content-Type'] = 'application/json'
+    body = JSON.stringify(json)
+  }
   const response = await fetch(`${config.url}/functions/v1/video?${query}`, {
     method, body, signal, headers,
     cache: 'no-store',
@@ -63,6 +72,7 @@ function updateOwnerControls(signedIn) {
   ownerEntry.hidden = signedIn
   signOutButton.hidden = !signedIn
   uploadButton.hidden = !signedIn
+  $('telegram-open').hidden = !signedIn
   updateEmptyDetail()
 }
 
@@ -75,6 +85,8 @@ function signOut() {
   const previousToken = token
   token = ''
   uploadRequest?.abort()
+  telegramRequest?.abort()
+  if (telegramDialog.open) telegramDialog.close()
   if ($('upload-dialog').open) $('upload-dialog').close()
   uploadForm.reset()
   uploadId = undefined
@@ -248,6 +260,71 @@ async function upload(event) {
   }
 }
 
+function renderTelegram(step) {
+  telegramStep = step
+  const needsValue = step === 'code' || step === 'password'
+  const field = telegramForm.elements.confirmation
+  field.value = ''
+  field.required = needsValue
+  field.type = step === 'password' ? 'password' : 'text'
+  field.inputMode = step === 'code' ? 'numeric' : 'text'
+  field.autocomplete = step === 'password' ? 'off' : 'one-time-code'
+  $('telegram-field').hidden = !needsValue
+  $('telegram-label').textContent = step === 'password' ? 'Пароль двухэтапной защиты Telegram' : 'Код из Telegram'
+  $('telegram-submit').textContent = needsValue ? 'Подтвердить' : 'Отправить код'
+  $('telegram-restart').hidden = !needsValue
+  telegramForm.hidden = !['ready', 'code', 'password'].includes(step)
+
+  const instructions = {
+    ready: 'Нажми «Отправить код». Telegram пришлёт код входа.',
+    code: 'Открой сообщение от Telegram и введи код здесь.',
+    password: 'Telegram запрашивает пароль двухэтапной защиты.',
+    connected: 'Закрытый канал подключён. Можно загружать видео.',
+    unconfigured: 'Ожидаем настройки канала.',
+  }
+  message(telegramMessage, instructions[step] || '')
+  if (needsValue) field.focus()
+}
+
+async function telegramSetup(action) {
+  if (telegramRequest) return
+  const controller = new AbortController()
+  telegramRequest = controller
+  const value = telegramForm.elements.confirmation.value
+  telegramForm.elements.confirmation.value = ''
+  for (const field of telegramForm.elements) field.disabled = true
+  message(telegramMessage, 'Связываемся с Telegram…')
+  try {
+    const response = await request('telegram-setup', action ? {
+      method: 'POST', json: { action, value }, signal: controller.signal,
+    } : { signal: controller.signal })
+    const { step } = await response.json()
+    if (controller.signal.aborted) return
+    for (const field of telegramForm.elements) field.disabled = false
+    renderTelegram(step)
+  } catch (error) {
+    showError(error, telegramMessage)
+  } finally {
+    telegramRequest = null
+    for (const field of telegramForm.elements) field.disabled = false
+  }
+}
+
+$('telegram-open').addEventListener('click', () => {
+  telegramDialog.showModal()
+  telegramForm.hidden = true
+  void telegramSetup()
+})
+telegramForm.addEventListener('submit', (event) => {
+  event.preventDefault()
+  void telegramSetup(telegramStep === 'ready' ? 'start' : telegramStep)
+})
+$('telegram-restart').addEventListener('click', () => void telegramSetup('start'))
+telegramDialog.addEventListener('close', () => {
+  telegramRequest?.abort()
+  telegramForm.reset()
+})
+
 ownerEntry.addEventListener('click', () => {
   message($('login-error'))
   ownerLogin.showModal()
@@ -299,7 +376,7 @@ $('search').addEventListener('input', () => {
   searchTimer = setTimeout(() => void loadLibrary(), 180)
 })
 $('more').addEventListener('click', () => void loadLibrary(true))
-window.addEventListener('pagehide', () => { if (token) signOut() })
+window.addEventListener('pagehide', (event) => { if (token && !event.persisted) signOut() })
 if (config.url && config.publishableKey) {
   ownerEntry.hidden = window.top !== window.self
   void loadLibrary()

@@ -92,3 +92,6 @@ progress { width: 100%; accent-color: var(--clay); }
   .toolbar button { padding-inline: .45rem; }
   .toolbar svg { display: none; }
 }
+
+#telegram-message { margin-top: .65rem; }
+.toolbar { flex-wrap: wrap; justify-content: flex-end; }
