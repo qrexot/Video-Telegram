@@ -1,2 +1,5 @@
 [functions.video]
 verify_jwt = false
+
+[functions.photo-previews]
+verify_jwt = false

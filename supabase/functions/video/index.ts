@@ -990,69 +990,26 @@ async function telegramPreviewSource(request: Request, params: URLSearchParams) 
   return photoResponse(request, client, file, new Headers({ ...headers, "Content-Type": row.data.mime_type }))
 }
 
-let imageMagickReady: Promise<typeof import("npm:@imagemagick/magick-wasm@0.0.39")> | undefined
-
-function imageMagick() {
-  if (!imageMagickReady) {
-    imageMagickReady = import("npm:@imagemagick/magick-wasm@0.0.39").then(async (magick) => {
-      const wasm = new URL("magick.wasm", import.meta.resolve("npm:@imagemagick/magick-wasm@0.0.39"))
-      await magick.initializeImageMagick(await Deno.readFile(wasm))
-      return magick
-    }).catch((error) => {
-      imageMagickReady = undefined
-      throw error
-    })
+async function saveTelegramPreview(request: Request, params: URLSearchParams) {
+  if (request.headers.has("x-video-sync")) await authorizeTelegramWorker(request)
+  else await requireOwner(request)
+  const id = validId(params.get("id"))
+  const row = await db.from("photos").select("telegram_original_id,telegram_preview_id,telegram_preview_thumb")
+    .eq("id", id).is("deleted_at", null).maybeSingle()
+  if (row.error) throw row.error
+  if (!row.data?.telegram_original_id) throw new HttpError(404)
+  if (row.data.telegram_preview_id !== row.data.telegram_original_id || row.data.telegram_preview_thumb) {
+    return json({ saved: false, alreadyReady: true })
   }
-  return imageMagickReady
-}
-
-async function generatePhotoPreview(bytes: Uint8Array) {
-  const { ImageMagick, MagickFormat, MagickReadSettings } = await imageMagick()
-  const settings = new MagickReadSettings()
-  settings.setDefine(MagickFormat.Jpeg, "size", "1400x1400")
-  return await ImageMagick.read(bytes, settings, (image) => {
-    image.autoOrient()
-    const ratio = Math.min(1, 1400 / Math.max(image.width, image.height))
-    if (ratio < 1) image.thumbnail(Math.round(image.width * ratio), Math.round(image.height * ratio))
-    image.strip()
-    image.quality = 76
-    return image.write(MagickFormat.Jpeg, (output) => new Blob([new Uint8Array(output)], { type: "image/jpeg" }))
-  })
-}
-
-async function runTelegramPreviewJob(request: Request) {
-  const candidate = await authorizeTelegramWorker(request)
-  const claim = await db.rpc("claim_telegram_photo_preview")
-  if (claim.error) throw claim.error
-  const row = (claim.data as { id: string; size_bytes: number }[])[0]
-  if (!row) return json({ generated: 0 })
-  const { id, size_bytes: size } = row
-  if (!size || size > photoMaxSize) throw new HttpError(400)
-  const endpoint = new URL("/functions/v1/video", Deno.env.get("SUPABASE_URL")!)
-  endpoint.search = new URLSearchParams({ action: "telegram-preview-source", id }).toString()
-  const chunkSize = 2 * 1024 * 1024
-  const bytes = new Uint8Array(size)
-  const readPart = async (offset: number) => {
-    const end = Math.min(size, offset + chunkSize) - 1
-    const result = await fetch(endpoint, {
-      headers: { "x-video-sync": candidate, Range: `bytes=${offset}-${end}` },
-      signal: AbortSignal.timeout(26000),
-    })
-    if (result.status !== 206) throw new HttpError(502, "Telegram не отдал фото для превью.")
-    const chunk = new Uint8Array(await result.arrayBuffer())
-    if (chunk.length !== end - offset + 1) throw new HttpError(502)
-    bytes.set(chunk, offset)
-  }
-  for (let offset = 0; offset < size; offset += 3 * chunkSize) {
-    const jobs = [offset, offset + chunkSize, offset + 2 * chunkSize].filter((start) => start < size)
-    await Promise.all(jobs.map(readPart))
-  }
-  const preview = await generatePhotoPreview(bytes)
-  const image = await telegramImage(preview, "preview.jpg", `photo:${id}:preview`)
+  const length = Number(request.headers.get("Content-Length"))
+  if (!Number.isSafeInteger(length) || length < 4 || length > 1024 * 1024) throw new HttpError(413)
+  const bytes = await readPart(request, length)
+  if (bytes[0] !== 255 || bytes[1] !== 216 || bytes[2] !== 255) throw new HttpError(415)
+  const image = await telegramImage(new Blob([new Uint8Array(bytes)], { type: "image/jpeg" }), "preview.jpg", `photo:${id}:preview`)
   const saved = await db.from("photos").update({ telegram_preview_id: image.sentId, telegram_preview_thumb: null })
-    .eq("id", id)
+    .eq("id", id).eq("telegram_preview_id", row.data.telegram_original_id).is("telegram_preview_thumb", null)
   if (saved.error) throw saved.error
-  return json({ generated: 1, bytes: preview.size })
+  return json({ saved: true })
 }
 
 async function importChannel(request: Request) {
@@ -1092,7 +1049,7 @@ Deno.serve(async (request) => {
   try {
     const action = params.get("action")
     if (request.method === "POST" && action === "telegram-import") return await importChannel(request)
-    if (request.method === "POST" && action === "telegram-preview-job") return await runTelegramPreviewJob(request)
+    if (request.method === "POST" && action === "telegram-preview-store") return await saveTelegramPreview(request, params)
     if (request.method === "GET" && action === "telegram-preview-source") return await telegramPreviewSource(request, params)
     if (request.method === "GET" && (action === "list" || action === "photos")) {
       if (params.has("view") && params.get("view") !== "public") await requireOwner(request)
