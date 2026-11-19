@@ -17,6 +17,7 @@ const player = $('player')
 const video = $('video')
 const pageSize = 24
 const mebibyte = 1024 * 1024
+const photoPartCutoff = 10 * mebibyte
 const smallVideoLimit = 20 * mebibyte
 const videoLimit = 2_000_000_000
 const batchSize = 4 * mebibyte
@@ -30,6 +31,8 @@ let libraryKind = 'video'
 let libraryView = 'public'
 let uploadKind = 'video'
 let pendingTrash
+let openPhotoItem
+let photoDownload
 const trash = $('trash-confirm')
 const photoDialog = $('photo-dialog')
 
@@ -63,7 +66,7 @@ async function responseError(response, fallback) {
 async function request(action, { method = 'GET', params = {}, body, signal, json } = {}) {
   const query = new URLSearchParams({ action, ...params })
   const headers = { apikey: config.publishableKey }
-  if (action === 'session' || action.startsWith('upload') || action === 'telegram-setup' || ['manage', 'cover-upload', 'photo-upload'].includes(action) || (params.view && params.view !== 'public')) headers.Authorization = `Bearer ${token}`
+  if (action === 'session' || action.startsWith('upload') || action === 'telegram-setup' || ['manage', 'cover-upload', 'photo-upload', 'photo-part'].includes(action) || (params.view && params.view !== 'public')) headers.Authorization = `Bearer ${token}`
   if (json) {
     headers['Content-Type'] = 'application/json'
     body = JSON.stringify(json)
@@ -171,11 +174,13 @@ function assetURL(id, type) {
 }
 
 function openPhoto(item) {
+  openPhotoItem = item
   $('photo-title').textContent = item.title
   $('photo-description').textContent = item.description
   $('photo-meta').textContent = `${item.width} × ${item.height} · ${size.format(item.size_bytes / mebibyte)} МБ`
   $('photo-preview').src = assetURL(item.id, 'preview')
   $('photo-preview').alt = item.title
+  $('photo-original').textContent = 'Скачать оригинал'
   $('photo-original').href = assetURL(item.id, 'original')
   photoDialog.showModal()
 }
@@ -290,7 +295,50 @@ for (const button of document.querySelectorAll('[data-view]')) {
 $('trash-submit').addEventListener('click', (event) => {
   if (pendingTrash) void manageItem(pendingTrash.id, pendingTrash.kind, 'delete', event.currentTarget)
 })
-photoDialog.addEventListener('close', () => $('photo-preview').removeAttribute('src'))
+async function downloadPhoto(event) {
+  const item = openPhotoItem
+  if (!item || item.size_bytes <= batchSize) return
+  event.preventDefault()
+  if (photoDownload) return
+  const button = event.currentTarget
+  const controller = new AbortController()
+  photoDownload = controller
+  try {
+    const chunks = []
+    const url = assetURL(item.id, 'original')
+    for (let from = 0; from < item.size_bytes; from += batchSize) {
+      const to = Math.min(from + batchSize, item.size_bytes) - 1
+      const response = await fetch(url, {
+        headers: { Range: `bytes=${from}-${to}` }, signal: controller.signal, cache: 'no-store',
+      })
+      if (response.status !== 206 || response.headers.get('Content-Range') !== `bytes ${from}-${to}/${item.size_bytes}`) {
+        throw new Error('Unexpected photo download range')
+      }
+      chunks.push(await response.blob())
+      button.textContent = `Скачивание · ${Math.floor((to + 1) * 100 / item.size_bytes)}%`
+    }
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(new Blob(chunks, { type: chunks[0].type }))
+    link.download = item.filename || item.title
+    document.body.append(link)
+    link.click()
+    link.remove()
+    setTimeout(() => URL.revokeObjectURL(link.href), 30000)
+  } catch (error) {
+    if (!controller.signal.aborted) button.textContent = 'Повторить скачивание'
+    return
+  } finally {
+    photoDownload = undefined
+  }
+  button.textContent = 'Скачать оригинал'
+}
+
+$('photo-original').addEventListener('click', downloadPhoto)
+photoDialog.addEventListener('close', () => {
+  photoDownload?.abort()
+  openPhotoItem = undefined
+  $('photo-preview').removeAttribute('src')
+})
 
 async function loadLibrary(append = false) {
   libraryRequest?.abort()
@@ -452,6 +500,27 @@ async function putCover(id, cover, signal) {
   await request('cover-upload', { method: 'POST', params: { id }, body: data, signal })
 }
 
+async function uploadParts(action, file, params, signal, progress) {
+  progress.max = file.size
+  progress.value = 0
+  for (let sent = 0; sent < file.size; sent += batchSize) {
+    const chunk = file.slice(sent, sent + batchSize)
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await request(action, { method: 'POST', params: { ...params, offset: sent }, body: chunk, signal })
+        break
+      } catch (error) {
+        const temporary = error instanceof TypeError || [408, 500, 502, 503, 504].includes(error.status)
+        if (!temporary || attempt >= 3 || signal.aborted) throw error
+        message($('upload-status'), 'Повторяем отправку части видео…')
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1000))
+      }
+    }
+    progress.value = sent + chunk.size
+    message($('upload-status'), `Загружено ${Math.floor(100 * progress.value / file.size)}%`)
+  }
+}
+
 async function upload(event) {
   event.preventDefault()
   if (!token || uploadRequest) return
@@ -488,7 +557,13 @@ async function upload(event) {
       const body = new FormData()
       body.set('title', title)
       body.set('description', description)
-      body.set('photo', file)
+      if (file.size <= photoPartCutoff) body.set('photo', file)
+      else {
+        await uploadParts('photo-part', file, { id: uploadId, size: file.size }, signal, progress)
+        body.set('size', file.size)
+        body.set('mime', file.type)
+        body.set('filename', file.name)
+      }
       body.set('preview', preview.blob, 'preview.jpg')
       body.set('width', preview.width)
       body.set('height', preview.height)
@@ -502,24 +577,7 @@ async function upload(event) {
       await request('upload', { method: 'POST', params: { id: uploadId, ...variant }, body, signal })
     } else {
       const params = { id: uploadId, size: file.size, ...variant }
-      progress.max = file.size
-      progress.value = 0
-      for (let sent = 0; sent < file.size; sent += batchSize) {
-        const chunk = file.slice(sent, sent + batchSize)
-        for (let attempt = 1; ; attempt++) {
-          try {
-            await request('upload-part', { method: 'POST', params: { ...params, offset: sent }, body: chunk, signal })
-            break
-          } catch (error) {
-            const temporary = error instanceof TypeError || [408, 500, 502, 503, 504].includes(error.status)
-            if (!temporary || attempt >= 3 || signal.aborted) throw error
-            message($('upload-status'), 'Повторяем отправку части видео…')
-            await new Promise((resolve) => setTimeout(resolve, attempt * 1000))
-          }
-        }
-        progress.value = sent + chunk.size
-        message($('upload-status'), `Загружено ${Math.floor(100 * progress.value / file.size)}%`)
-      }
+      await uploadParts('upload-part', file, params, signal, progress)
       message($('upload-status'), 'Публикуем видео…')
       await request('upload-finish', { method: 'POST', params, json: { title, description }, signal })
     }
