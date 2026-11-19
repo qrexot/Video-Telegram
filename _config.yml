@@ -1,0 +1,4 @@
+exclude:
+  - supabase
+  - tools
+  - README.md
