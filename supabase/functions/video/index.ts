@@ -351,7 +351,7 @@ async function listMedia(params: URLSearchParams, action: string) {
 
 async function publishedVideo(id: string) {
   const { data, error } = await db.from("videos")
-    .select("id,original_id,telegram_message_id,mime_type,size_bytes,has_cover,telegram_cover_id,hidden,deleted_at")
+    .select("id,original_id,telegram_message_id,mime_type,size_bytes,has_cover,telegram_cover_id,telegram_cover_thumb,hidden,deleted_at")
     .eq("id", id).not("telegram_message_id", "is", null).maybeSingle()
   if (error) throw error
   if (!data || data.hidden || data.deleted_at) throw new HttpError(404)
@@ -371,6 +371,12 @@ async function manageMedia(request: Request, id: string) {
   const changes: Record<string, Record<string, unknown>> = {
     hide: { hidden: true }, show: { hidden: false },
     delete: { deleted_at: new Date().toISOString() }, restore: { deleted_at: null },
+  }
+  if (input.operation === "edit") {
+    const title = typeof input.title === "string" ? input.title.trim() : ""
+    const description = typeof input.description === "string" ? input.description.trim() : ""
+    if (!title || title.length > 120 || description.length > 1200) throw new HttpError(400)
+    changes.edit = { title, description, caption_pending: true }
   }
   if (typeof input.operation !== "string" || !Object.hasOwn(changes, input.operation)) throw new HttpError(400)
   let query = db.from(table).update(changes[input.operation]).eq("id", id)
@@ -398,13 +404,35 @@ async function telegramImage(file: Blob, filename: string, label: string) {
   return { sentId, fingerprint }
 }
 
-async function telegramImageDocument(id: number) {
+type TelegramFile = { location: Api.TypeInputFileLocation; dcId: number; size: number }
+
+function documentFile(doc: Api.Document, thumb = ""): TelegramFile {
+  const size = thumb ? imageSizes(doc.thumbs ?? []).find((item) => item.type === thumb)?.bytes : doc.size.toJSNumber()
+  if (!size) throw new HttpError(404)
+  const location = new Api.InputDocumentFileLocation({
+    id: doc.id, accessHash: doc.accessHash, fileReference: doc.fileReference, thumbSize: thumb,
+  })
+  return { location, dcId: doc.dcId, size }
+}
+
+async function telegramImageFile(id: number, thumb: string | null) {
   const { client, channel } = await connectTelegram()
   const [post] = await client.getMessages(channel, { ids: [id] })
-  if (!(post?.media instanceof Api.MessageMediaDocument) || !(post.media.document instanceof Api.Document)) {
-    throw new HttpError(404, "Фото отсутствует в Telegram.")
+  const media = post?.media
+  if (media instanceof Api.MessageMediaDocument && media.document instanceof Api.Document) {
+    return { client, file: documentFile(media.document, thumb ?? "") }
   }
-  return { client, doc: post.media.document }
+  if (media instanceof Api.MessageMediaPhoto && media.photo instanceof Api.Photo && thumb) {
+    const photo = media.photo
+    const size = imageSizes(photo.sizes).find((item) => item.type === thumb)?.bytes
+    if (size) {
+      const location = new Api.InputPhotoFileLocation({
+        id: photo.id, accessHash: photo.accessHash, fileReference: photo.fileReference, thumbSize: thumb,
+      })
+      return { client, file: { location, dcId: photo.dcId, size } }
+    }
+  }
+  throw new HttpError(404, "Фото отсутствует в Telegram.")
 }
 
 const photoPartCutoff = 10 * 1024 * 1024
@@ -480,13 +508,13 @@ async function storeCover(request: Request, id: string) {
   const cover = form.get("cover")
   if (!(cover instanceof File) || cover.type !== "image/jpeg" || !cover.size || cover.size > 1024 * 1024) throw new HttpError(400)
   const image = await telegramImage(cover, "cover.jpg", `video:${id}:cover`)
-  const saved = await db.from("videos").update({ has_cover: true, telegram_cover_id: image.sentId }).eq("id", id)
+  const saved = await db.from("videos").update({ has_cover: true, telegram_cover_id: image.sentId, telegram_cover_thumb: null }).eq("id", id)
   if (saved.error) throw saved.error
   return json({ id })
 }
 
-function photoResponse(request: Request, client: TelegramClient, doc: Api.Document, result: Headers) {
-  const size = doc.size.toJSNumber()
+function photoResponse(request: Request, client: TelegramClient, file: TelegramFile, result: Headers) {
+  const { size } = file
   if (!size) throw new HttpError(502)
   const range = request.headers.get("Range")
   let start = 0
@@ -504,25 +532,29 @@ function photoResponse(request: Request, client: TelegramClient, doc: Api.Docume
     result.set("Content-Range", `bytes ${start}-${end}/${size}`)
   }
   result.set("Content-Length", String(end - start + 1))
-  return new Response(telegramDocumentStream(client, doc, start, end), { status: range ? 206 : 200, headers: result })
+  return new Response(telegramFileStream(client, file, start, end), { status: range ? 206 : 200, headers: result })
 }
 
 async function mediaAsset(request: Request, params: URLSearchParams) {
   const id = validId(params.get("id"))
   const type = params.get("type")
   let messageId: number | null = null
+  let thumb: string | null = null
   let fileName: string | undefined
   let mime = "image/jpeg"
   if (type === "cover") {
     const video = await publishedVideo(id)
     if (!video.has_cover) throw new HttpError(404)
     messageId = video.telegram_cover_id
+    thumb = video.telegram_cover_thumb
   } else if (type === "preview" || type === "original") {
-    const photo = await db.from("photos").select("filename,mime_type,telegram_original_id,telegram_preview_id").eq("id", id)
+    const photo = await db.from("photos").select("filename,mime_type,telegram_original_id,telegram_preview_id,telegram_original_thumb,telegram_preview_thumb").eq("id", id)
       .eq("hidden", false).is("deleted_at", null).maybeSingle()
     if (photo.error) throw photo.error
     if (!photo.data) throw new HttpError(404)
     messageId = type === "original" ? photo.data.telegram_original_id : photo.data.telegram_preview_id
+    thumb = type === "original" ? photo.data.telegram_original_thumb : photo.data.telegram_preview_thumb
+    if (!thumb && type === "preview" && photo.data.telegram_original_id === messageId) mime = photo.data.mime_type
     if (type === "original") {
       fileName = photo.data.filename
       mime = photo.data.mime_type
@@ -531,8 +563,8 @@ async function mediaAsset(request: Request, params: URLSearchParams) {
   const result = new Headers({ ...headers, "Content-Type": mime })
   if (fileName) result.set("Content-Disposition", `attachment; filename="photo"; filename*=UTF-8''${encodeURIComponent(fileName.toWellFormed()).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16))}`)
   if (!messageId) throw new HttpError(404)
-  const { client, doc } = await telegramImageDocument(messageId)
-  return photoResponse(request, client, doc, result)
+  const { client, file } = await telegramImageFile(messageId, thumb)
+  return photoResponse(request, client, file, result)
 }
 
 async function readUpload(request: Request, maxBody = maxVideo + 32 * 1024) {
@@ -744,11 +776,9 @@ async function publishLargeVideo(request: Request, params: URLSearchParams, owne
   return await finishUpload(client, channel, id, mime, file)
 }
 
-function telegramDocumentStream(client: TelegramClient, doc: Api.Document, start: number, end: number) {
-  const location = new Api.InputDocumentFileLocation({
-    id: doc.id, accessHash: doc.accessHash, fileReference: doc.fileReference, thumbSize: "",
-  })
-  let sender = client.getSender(doc.dcId)
+function telegramFileStream(client: TelegramClient, file: TelegramFile, start: number, end: number) {
+  const { location, dcId } = file
+  let sender = client.getSender(dcId)
   let offset = Math.floor(start / telegramPartSize) * telegramPartSize
   let remaining = end - start + 1
   let canceled = false
@@ -826,7 +856,7 @@ async function playVideo(request: Request, id: string | null) {
     // Keep each range response short enough for an Edge Function invocation.
     end = Math.min(end, start + playbackRange - 1)
   }
-  const body = telegramDocumentStream(client, doc, start, end)
+  const body = telegramFileStream(client, documentFile(doc), start, end)
   const responseHeaders = new Headers({
     ...headers, "Content-Type": data.mime_type, "Content-Length": String(end - start + 1),
     "Cache-Control": "private, no-store",
@@ -836,6 +866,139 @@ async function playVideo(request: Request, id: string | null) {
   return new Response(body, { status: range ? 206 : 200, headers: responseHeaders })
 }
 
+type RemoteImageSize = { type: string; width: number; height: number; bytes: number }
+
+function imageSizes(sizes: Api.TypePhotoSize[]) {
+  return sizes.flatMap((size): RemoteImageSize[] => {
+    const bytes = size instanceof Api.PhotoSize ? size.size :
+      size instanceof Api.PhotoSizeProgressive ? size.sizes.at(-1) ?? 0 : 0
+    return bytes && "w" in size && "h" in size ?
+      [{ type: size.type, width: size.w, height: size.h, bytes }] : []
+  }).sort((a, b) => a.width * a.height - b.width * b.height)
+}
+
+function mediaCaption(id: string, title: string, description: string) {
+  const tail = `\n\nID: ${id}`
+  const body = description ? `${title}\n\n${description}` : title
+  return body.slice(0, 1024 - tail.length).toWellFormed() + tail
+}
+
+async function flushCaptions(client: TelegramClient, channel: Api.InputPeerChannel) {
+  for (const table of ["photos", "videos"]) {
+    const key = table === "photos" ? "telegram_original_id" : "telegram_message_id"
+    const { data, error } = await db.from(table)
+      .select(`id,title,description,${key}`).eq("caption_pending", true)
+      .not(key, "is", null).order("id").limit(8)
+    if (error) throw error
+    for (const row of data as unknown as (Record<string, number> & { id: string; title: string; description: string })[]) {
+      try {
+        await client.invoke(new Api.messages.EditMessage({
+          peer: channel, id: row[key], message: mediaCaption(row.id, row.title, row.description),
+        }))
+      } catch (error) {
+        const code = (error as { errorMessage?: string }).errorMessage
+        if (code !== "MESSAGE_NOT_MODIFIED" && code !== "MESSAGE_ID_INVALID" &&
+            code !== "MESSAGE_EDIT_TIME_EXPIRED" && code !== "MESSAGE_AUTHOR_REQUIRED") {
+          console.error("Telegram caption retry", code ?? "unknown")
+          continue
+        }
+        if (code !== "MESSAGE_NOT_MODIFIED") console.error("Telegram caption unavailable", code)
+      }
+      const saved = await db.from(table).update({ caption_pending: false }).eq("id", row.id)
+        .eq("title", row.title).eq("description", row.description)
+      if (saved.error) throw saved.error
+    }
+  }
+}
+
+function alreadyLabeled(message: string) {
+  return uuid.test(message.trim()) ||
+    /^(?:photo|video):[\da-f-]{36}:(?:original|preview|cover)(?::[\da-f]+)?$/i.test(message.trim()) ||
+    /(?:^|\n)ID: [\da-f-]{36}\s*$/i.test(message)
+}
+
+async function registerChannelMedia(post: Api.Message) {
+  const caption = (post.message || "").trim()
+  if (alreadyLabeled(caption)) return false
+  const [first, ...details] = caption.split(/\r?\n/)
+  const doc = post.media instanceof Api.MessageMediaDocument && post.media.document instanceof Api.Document ? post.media.document : null
+  const photo = post.media instanceof Api.MessageMediaPhoto && post.media.photo instanceof Api.Photo ? post.media.photo : null
+  if (!doc && !photo) return false
+  const filenameAttribute = doc?.attributes.find((item) => item instanceof Api.DocumentAttributeFilename)
+  const name = filenameAttribute instanceof Api.DocumentAttributeFilename ? filenameAttribute.fileName.slice(0, 240) : ""
+  const thumbs = imageSizes(doc?.thumbs ?? photo?.sizes ?? [])
+  const largest = thumbs.at(-1)
+  const preview = thumbs.find((item) => Math.max(item.width, item.height) >= 640) ?? largest
+  const id = crypto.randomUUID()
+  const extension = name.split(".").at(-1)?.toLowerCase() || ""
+  const imageExtensions = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp",
+    gif: "image/gif", avif: "image/avif", heic: "image/heic", heif: "image/heif" } as Record<string, string>
+  const mime = photo ? "image/jpeg" : (doc?.mimeType === "application/octet-stream" ?
+    imageExtensions[extension] || doc.mimeType : doc?.mimeType || "")
+  const videoMime = mime === "video/webm" || /\.webm$/i.test(name) ? "video/webm" :
+    mime === "video/mp4" || /\.mp4$/i.test(name) ? "video/mp4" : null
+  const kind = photo || photoTypes.has(mime) ? "photo" : videoMime ? "video" : null
+  if (!kind) return false
+  const size = doc?.size.toJSNumber() ?? largest?.bytes ?? 0
+  if (!Number.isSafeInteger(size) || size <= 0 || (kind === "photo" ? size > photoMaxSize : size > maxLargeVideo)) return false
+  const title = (first?.trim() || name.replace(/\.[^.]+$/, "") || (kind === "photo" ? "Фото " : "Видео ") + post.id)
+    .slice(0, 120).toWellFormed()
+  const fields = { id, title, description: details.join("\n").trim().slice(0, 1200).toWellFormed(),
+    size_bytes: size, created_at: new Date(post.date * 1000).toISOString(), caption_pending: true }
+
+  if (kind === "video") {
+    const result = await db.from("videos").upsert({
+      ...fields, mime_type: videoMime, telegram_message_id: post.id,
+      has_cover: !!preview, telegram_cover_id: preview ? post.id : null, telegram_cover_thumb: preview?.type ?? null,
+    }, { onConflict: "telegram_message_id", ignoreDuplicates: true }).select("id")
+    if (result.error) throw result.error
+    return Boolean(result.data?.length)
+  }
+  const dims = doc?.attributes.find((item) => item instanceof Api.DocumentAttributeImageSize)
+  const result = await db.from("photos").upsert({
+    ...fields, filename: name || `photo-${post.id}.jpg`, mime_type: mime,
+    width: dims instanceof Api.DocumentAttributeImageSize ? dims.w : largest?.width ?? 1,
+    height: dims instanceof Api.DocumentAttributeImageSize ? dims.h : largest?.height ?? 1,
+    telegram_original_id: post.id, telegram_preview_id: post.id,
+    telegram_original_thumb: photo ? largest?.type ?? null : null, telegram_preview_thumb: preview?.type ?? null,
+  }, { onConflict: "telegram_original_id", ignoreDuplicates: true }).select("id")
+  if (result.error) throw result.error
+  return Boolean(result.data?.length)
+}
+
+async function importChannel(request: Request) {
+  const candidate = request.headers.get("x-video-sync") || ""
+  if (!/^[a-f0-9]{64}$/.test(candidate)) throw new HttpError(401)
+  const access = await db.rpc("video_telegram_import_authorized", { candidate })
+  if (access.error) throw access.error
+  if (access.data !== true) throw new HttpError(401)
+  const now = new Date()
+  const until = new Date(now.getTime() + 110000).toISOString()
+  const lock = await db.from("video_telegram_import_state").update({ busy_until: until })
+    .eq("singleton", true).lt("busy_until", now.toISOString()).select("last_message_id").maybeSingle()
+  if (lock.error) throw lock.error
+  if (!lock.data) return json({ busy: true })
+  let cursor = lock.data.last_message_id
+  let count = 0
+  try {
+    const { client, channel } = await connectTelegram()
+    for await (const post of client.iterMessages(channel, { minId: cursor, reverse: true, limit: 24 })) {
+      if (post.id <= cursor) continue
+      if (post instanceof Api.Message && await registerChannelMedia(post)) count++
+      cursor = post.id
+    }
+    const saved = await db.from("video_telegram_import_state").update({ last_message_id: cursor })
+      .eq("singleton", true).eq("busy_until", until)
+    if (saved.error) throw saved.error
+    await flushCaptions(client, channel)
+    return json({ imported: count, cursor })
+  } finally {
+    const released = await db.from("video_telegram_import_state").update({ busy_until: now.toISOString() })
+      .eq("singleton", true).eq("busy_until", until)
+    if (released.error) console.error("Telegram import release failed")
+  }
+}
+
 Deno.serve(async (request) => {
   const requester = request.headers.get("Origin")
   if (requester && requester !== origin) return new Response(null, { status: 403 })
@@ -843,6 +1006,7 @@ Deno.serve(async (request) => {
   const params = new URL(request.url).searchParams
   try {
     const action = params.get("action")
+    if (request.method === "POST" && action === "telegram-import") return await importChannel(request)
     if (request.method === "GET" && (action === "list" || action === "photos")) {
       if (params.has("view") && params.get("view") !== "public") await requireOwner(request)
       return await listMedia(params, action)

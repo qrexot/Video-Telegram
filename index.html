@@ -10,7 +10,7 @@
   <title>Видео — Video Telegram</title>
   <link rel="icon" href="./docs/video.svg">
   <link rel="stylesheet" href="./docs/style.css?v=9">
-  <script type="module" src="./docs/app.js?v=10"></script>
+  <script type="module" src="./docs/app.js?v=11"></script>
 </head>
 <body>
   <svg class="icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -146,6 +146,18 @@
     <img id="photo-preview" alt="">
     <p id="photo-description"></p>
     <div class="photo-actions"><span id="photo-meta"></span><a id="photo-original" class="primary">Скачать оригинал</a></div>
+  </dialog>
+  <dialog id="edit-dialog" aria-labelledby="edit-title">
+    <div class="dialog-header">
+      <h2 id="edit-title">Редактировать публикацию</h2>
+      <button type="button" class="close subtle" data-close aria-label="Закрыть">×</button>
+    </div>
+    <form id="edit-form">
+      <label>Название<input name="title" maxlength="120" required></label>
+      <label>Описание<textarea name="description" maxlength="1200" rows="4"></textarea></label>
+      <p id="edit-status" class="message" role="status"></p>
+      <button type="submit" class="primary">Сохранить</button>
+    </form>
   </dialog>
   <dialog id="trash-confirm" aria-labelledby="trash-title">
     <div class="dialog-header"><h2 id="trash-title">Удалить из библиотеки?</h2><button type="button" class="close subtle" data-close aria-label="Закрыть">×</button></div>

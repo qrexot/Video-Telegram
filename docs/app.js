@@ -34,6 +34,9 @@ let pendingTrash
 let openPhotoItem
 let photoDownload
 const trash = $('trash-confirm')
+const editDialog = $('edit-dialog')
+const editForm = $('edit-form')
+let editing
 const photoDialog = $('photo-dialog')
 
 class RequestError extends Error {
@@ -108,6 +111,7 @@ function signOut() {
   updateView()
   if (previousToken) {
     if (trash.open) trash.close()
+    if (editDialog.open) editDialog.close()
     if (player.open) player.close()
     void loadLibrary()
   }
@@ -177,7 +181,8 @@ function openPhoto(item) {
   openPhotoItem = item
   $('photo-title').textContent = item.title
   $('photo-description').textContent = item.description
-  $('photo-meta').textContent = `${item.width} × ${item.height} · ${size.format(item.size_bytes / mebibyte)} МБ`
+  const dimensions = item.width > 1 && item.height > 1 ? `${item.width} × ${item.height} · ` : ''
+  $('photo-meta').textContent = `${dimensions}${size.format(item.size_bytes / mebibyte)} МБ`
   $('photo-preview').src = assetURL(item.id, 'preview')
   $('photo-preview').alt = item.title
   $('photo-original').textContent = 'Скачать оригинал'
@@ -256,7 +261,7 @@ function renderCard(item) {
     const actions = document.createElement('div')
     actions.className = 'card-actions'
     const options = item.deleted_at ? [['restore', 'Восстановить']] : [
-      item.hidden ? ['show', 'Показать'] : ['hide', 'Скрыть'], ['delete', 'Удалить'],
+      ['edit', 'Изменить'], item.hidden ? ['show', 'Показать'] : ['hide', 'Скрыть'], ['delete', 'Удалить'],
     ]
     for (const [operation, label] of options) {
       const button = document.createElement('button')
@@ -264,7 +269,13 @@ function renderCard(item) {
       button.className = operation === 'delete' ? 'danger' : 'subtle'
       button.textContent = label
       button.addEventListener('click', () => {
-        if (operation === 'delete') {
+        if (operation === 'edit') {
+          editing = { id: item.id, kind }
+          editForm.elements.title.value = item.title
+          editForm.elements.description.value = item.description || ''
+          message($('edit-status'))
+          editDialog.showModal()
+        } else if (operation === 'delete') {
           pendingTrash = { id: item.id, kind }
           trash.showModal()
         } else void manageItem(item.id, kind, operation, button)
@@ -275,6 +286,25 @@ function renderCard(item) {
   }
   return article
 }
+
+editForm.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  if (!editing || !token) return
+  const submit = editForm.querySelector('button[type="submit"]')
+  submit.disabled = true
+  const { id, kind } = editing
+  try {
+    const title = editForm.elements.title.value.trim()
+    const description = editForm.elements.description.value.trim()
+    await request('manage', { method: 'POST', params: { id }, json: { kind, operation: 'edit', title, description } })
+    if (editing?.id === id && editDialog.open) editDialog.close()
+    await loadLibrary()
+  } catch (error) {
+    showError(error, $('edit-status'))
+  } finally {
+    submit.disabled = false
+  }
+})
 
 for (const [id, kind] of [['tab-videos', 'video'], ['tab-photos', 'photo']]) {
   $(id).addEventListener('click', () => {
@@ -845,3 +875,7 @@ if (config.url && config.publishableKey) {
 } else {
   message($('library-status'), 'Видеотека готовится к подключению.')
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !document.querySelector('dialog[open]')) void loadLibrary()
+})
