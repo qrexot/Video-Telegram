@@ -15,6 +15,7 @@ const maxLargeVideo = 2_000_000_000
 const telegramPartSize = 512 * 1024
 const uploadBatch = 8 * telegramPartSize
 const pageSize = 24
+const playbackRange = 4 * 1024 * 1024
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const serverKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 const db = createClient(Deno.env.get("SUPABASE_URL")!, serverKey, {
@@ -327,7 +328,7 @@ async function listVideos(params: URLSearchParams) {
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100000) throw new HttpError(400)
   const search = (params.get("search") || "").trim().slice(0, 120)
   let query = db.from("videos").select("id,title,description,created_at,size_bytes", { count: "exact" })
-    .not("telegram_message_id", "is", null)
+    .not("telegram_message_id", "is", null).is("original_id", null)
   if (search) query = query.ilike("title", "%" + search.replace(/[\\%_]/g, "\\$&").replaceAll("*", "\\*") + "%")
   const result = await query.order("created_at", { ascending: false }).order("id", { ascending: false })
     .range(offset, offset + pageSize - 1)
@@ -373,7 +374,28 @@ function videoMime(bytes: Buffer) {
   throw new HttpError(415)
 }
 
-async function uploadVideo(request: Request, userId: string, id: string | null) {
+async function variantFields(params: URLSearchParams) {
+  const original = params.get("original")
+  const height = Number(params.get("height"))
+  if (original === null && !params.has("height")) return {}
+  if (!original || !uuid.test(original) || ![360, 480, 720].includes(height) || original === params.get("id")) throw new HttpError(400)
+  const item = await db.from("videos").select("id").eq("id", original)
+    .is("original_id", null).not("telegram_message_id", "is", null).maybeSingle()
+  if (item.error) throw item.error
+  if (!item.data) throw new HttpError(404)
+  return { original_id: original, quality_height: height }
+}
+
+async function listQualities(id: string | null) {
+  if (!id || !uuid.test(id)) throw new HttpError(400)
+  const result = await db.from("videos").select("id,quality_height")
+    .eq("original_id", id).not("telegram_message_id", "is", null).order("quality_height")
+  if (result.error) throw result.error
+  return json({ items: result.data })
+}
+
+async function uploadVideo(request: Request, userId: string, params: URLSearchParams) {
+  const id = params.get("id")
   if (!id || !uuid.test(id)) throw new HttpError(400)
   const form = await readUpload(request)
   const rawTitle = form.get("title")
@@ -389,7 +411,7 @@ async function uploadVideo(request: Request, userId: string, id: string | null) 
   const mime = videoMime(content)
   const { client, channel } = await connectTelegram()
   const row = await db.from("videos").insert({
-    id, uploader_id: userId, title, description, mime_type: mime, size_bytes: file.size,
+    id, uploader_id: userId, title, description, mime_type: mime, size_bytes: file.size, ...await variantFields(params),
   })
   if (row.error?.code === "23505") {
     const prior = await db.from("videos").select("telegram_message_id").eq("id", id)
@@ -468,7 +490,7 @@ async function uploadVideoPart(request: Request, params: URLSearchParams, ownerI
     if (error) throw error
     if (!data) {
       const { error } = await db.from("videos").insert({
-        id, uploader_id: ownerId, title: "Видео", description: "", mime_type: mime, size_bytes: size,
+        id, uploader_id: ownerId, title: "Видео", description: "", mime_type: mime, size_bytes: size, ...await variantFields(params),
       })
       if (error && error.code !== "23505") throw error
     }
@@ -539,38 +561,60 @@ async function playVideo(request: Request, id: string | null) {
       return new Response(null, { status: 416, headers: { ...headers, "Content-Range": `bytes */${size}` } })
     }
     // Keep each range response short enough for an Edge Function invocation.
-    end = Math.min(end, start + 4 * uploadBatch - 1)
+    end = Math.min(end, start + playbackRange - 1)
   }
-  const aligned = Math.floor(start / telegramPartSize) * telegramPartSize
-  const iterator = client.iterDownload({
-    file: post.media, offset: bigInt(aligned), requestSize: telegramPartSize,
-    fileSize: doc.size, dcId: doc.dcId, msgData: [channel, post.id],
+  const location = new Api.InputDocumentFileLocation({
+    id: doc.id, accessHash: doc.accessHash, fileReference: doc.fileReference, thumbSize: "",
   })
-  const part = iterator[Symbol.asyncIterator]()
-  let skip = start - aligned
+  let sender = client.getSender(doc.dcId)
+  let offset = Math.floor(start / telegramPartSize) * telegramPartSize
   let remaining = end - start + 1
+  let canceled = false
+  let firstPart = true
+  const queue: Promise<Buffer | null>[] = []
+  const fill = (count: number) => {
+    while (!canceled && queue.length < count && offset <= end) {
+      const at = offset
+      offset += telegramPartSize
+      queue.push((async () => {
+        const get = async () => await client.invokeWithSender(new Api.upload.GetFile({
+          location, offset: bigInt(at), limit: telegramPartSize,
+        }), await sender)
+        let result
+        try {
+          result = await get()
+        } catch (error) {
+          const dc = (error as { newDc?: number }).newDc
+          if (!dc) throw error
+          sender = client.getSender(dc)
+          result = await get()
+        }
+        return result instanceof Api.upload.File ? result.bytes : null
+      })().catch(() => null))
+    }
+  }
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
-      try {
-        const { value, done } = await part.next()
-        if (done) throw new Error("Incomplete Telegram download")
-        const bytes = value.subarray(skip, skip + remaining)
-        skip = 0
-        remaining -= bytes.length
-        controller.enqueue(new Uint8Array(bytes))
-        if (!remaining) {
-          controller.close()
-          await iterator.close()
-        }
-      } catch (error) {
-        if (remaining) controller.error(error)
-        await iterator.close().catch(() => {})
+      fill(firstPart ? 1 : 3)
+      const part = await queue.shift()
+      if (canceled) return
+      const skip = firstPart ? start % telegramPartSize : 0
+      firstPart = false
+      if (!part || part.length <= skip) {
+        canceled = true
+        controller.error(new Error("Incomplete Telegram download"))
+        return
       }
+      const bytes = part.subarray(skip, skip + remaining)
+      remaining -= bytes.length
+      controller.enqueue(new Uint8Array(bytes))
+      if (!remaining) controller.close()
     },
-    async cancel() { await iterator.close().catch(() => {}) },
+    cancel() { canceled = true },
   })
   const responseHeaders = new Headers({
     ...headers, "Content-Type": item.data.mime_type, "Content-Length": String(remaining),
+    "Cache-Control": "public, max-age=300",
     "Accept-Ranges": "bytes", "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges",
   })
   if (range) responseHeaders.set("Content-Range", `bytes ${start}-${end}/${size}`)
@@ -585,6 +629,7 @@ Deno.serve(async (request) => {
   try {
     const action = params.get("action")
     if (request.method === "GET" && action === "list") return await listVideos(params)
+    if (request.method === "GET" && action === "qualities") return await listQualities(params.get("id"))
     if (request.method === "GET" && action === "play") return await playVideo(request, params.get("id"))
     if ((request.method === "GET" || request.method === "POST") && action === "telegram-setup") {
       const ownerId = await requireOwner(request)
@@ -601,7 +646,7 @@ Deno.serve(async (request) => {
     }
     if (request.method === "POST" && action === "upload") {
       const ownerId = await requireOwner(request)
-      return await uploadVideo(request, ownerId, params.get("id"))
+      return await uploadVideo(request, ownerId, params)
     }
     return json({ message: "Действие недоступно." }, 404)
   } catch (error) {

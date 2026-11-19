@@ -204,15 +204,66 @@ async function loadLibrary(append = false) {
   }
 }
 
-function openPlayer(item) {
+const quality = $('video-quality')
+const speed = $('video-speed')
+const playerStatus = $('player-status')
+let playerRequest
+let sources = []
+let activeSource
+let resumePlayback
+let playbackRequested = false
+
+function selectSource() {
+  if (quality.value) return quality.value
+  const weakConnection = navigator.connection?.saveData || /^(slow-2g|2g|3g)$/.test(navigator.connection?.effectiveType)
+  const preferred = weakConnection ? 360 : 720
+  return sources.filter((item) => item.quality_height <= preferred).at(-1)?.id || sources[0].id
+}
+
+function playSource(id, time = 0) {
+  if (activeSource === id) return
+  activeSource = id
+  resumePlayback = time
+  message(playerStatus, 'Загружаем видео…')
+  const params = new URLSearchParams({ action: 'play', id, v: '6' })
+  video.src = `${config.url}/functions/v1/video?${params}`
+  video.playbackRate = Number(speed.value)
+  if (playbackRequested && !time) void video.play().catch(() => {})
+}
+
+async function openPlayer(item) {
+  const controller = new AbortController()
+  playerRequest = controller
   $('player-title').textContent = item.title
   $('player-description').textContent = item.description
-  message($('player-status'), 'Получаем видео из Telegram…')
-  const params = new URLSearchParams({ action: 'play', id: item.id })
-  video.src = `${config.url}/functions/v1/video?${params}`
+  message(playerStatus, 'Подключаем видео…')
+  const automatic = new Option('Авто', '')
+  quality.replaceChildren(automatic, new Option('Оригинал', item.id))
+  quality.value = ''
+  sources = [item]
+  playbackRequested = true
   video.hidden = false
   player.showModal()
+  if (item.size_bytes <= 8 * mebibyte) playSource(item.id)
+  try {
+    const response = await request('qualities', { params: { id: item.id }, signal: controller.signal })
+    const result = await response.json()
+    if (controller.signal.aborted) return
+    sources = [item, ...result.items]
+    for (const variant of result.items) {
+      quality.add(new Option(`${variant.quality_height}p`, variant.id), quality.options.length - 1)
+    }
+  } catch (error) {
+    if (controller.signal.aborted) return
+  }
+  if (!activeSource) playSource(selectSource())
 }
+
+speed.addEventListener('change', () => { video.playbackRate = Number(speed.value) })
+quality.addEventListener('change', () => {
+  playbackRequested = playbackRequested || !video.paused
+  playSource(selectSource(), video.currentTime)
+})
 
 async function upload(event) {
   event.preventDefault()
@@ -376,12 +427,31 @@ for (const button of document.querySelectorAll('[data-close]')) {
   })
 }
 player.addEventListener('close', () => {
+  playerRequest?.abort()
+  activeSource = undefined
+  resumePlayback = undefined
+  playbackRequested = false
   video.pause()
   video.removeAttribute('src')
   video.load()
   video.hidden = true
 })
-video.addEventListener('loadedmetadata', () => message($('player-status')))
+video.addEventListener('loadedmetadata', () => {
+  if (resumePlayback && Number.isFinite(video.duration)) {
+    video.currentTime = Math.min(resumePlayback, video.duration)
+  }
+  resumePlayback = undefined
+  video.playbackRate = Number(speed.value)
+  if (playbackRequested) void video.play().catch(() => {})
+  message(playerStatus)
+})
+video.addEventListener('pause', () => {
+  if (video.readyState >= HTMLMediaElement.HAVE_METADATA && resumePlayback === undefined) playbackRequested = false
+})
+video.addEventListener('playing', () => { playbackRequested = true; message(playerStatus) })
+video.addEventListener('waiting', () => {
+  if (activeSource) message(playerStatus, 'Буферизация…')
+})
 video.addEventListener('error', () => {
   if (video.hasAttribute('src')) message($('player-status'), 'Не удалось воспроизвести видео. Проверь подключение и формат файла.', true)
 })

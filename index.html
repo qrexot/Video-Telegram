@@ -9,8 +9,8 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src https://tilifwvlvomwnklviqtp.supabase.co; connect-src https://*.supabase.co; form-action 'none'; base-uri 'none'; object-src 'none'">
   <title>Видео — Video Telegram</title>
   <link rel="icon" href="./docs/video.svg">
-  <link rel="stylesheet" href="./docs/style.css?v=3">
-  <script type="module" src="./docs/app.js?v=5"></script>
+  <link rel="stylesheet" href="./docs/style.css?v=6">
+  <script type="module" src="./docs/app.js?v=6"></script>
 </head>
 <body>
   <svg class="icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -96,7 +96,19 @@
       <h2 id="player-title"></h2>
       <button type="button" class="close subtle" data-close aria-label="Закрыть">×</button>
     </div>
-    <video id="video" controls playsinline hidden></video>
+    <video id="video" controls playsinline preload="auto" hidden></video>
+    <div class="player-settings">
+      <label>Скорость
+        <select id="video-speed">
+          <option value="0.5">0,5×</option><option value="0.75">0,75×</option>
+          <option value="1" selected>1×</option><option value="1.25">1,25×</option>
+          <option value="1.5">1,5×</option><option value="2">2×</option>
+        </select>
+      </label>
+      <label>Качество
+        <select id="video-quality"><option value="">Авто</option></select>
+      </label>
+    </div>
     <p id="player-description"></p>
     <p id="player-status" class="message" role="status"></p>
   </dialog>

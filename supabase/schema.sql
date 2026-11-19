@@ -13,6 +13,13 @@ create table public.videos (
   mime_type text not null check (mime_type in ('video/mp4', 'video/webm')),
   size_bytes integer not null check (size_bytes between 1 and 2000000000),
   telegram_message_id integer unique check (telegram_message_id > 0),
+  original_id uuid references public.videos(id) on delete cascade,
+  quality_height integer,
+  constraint videos_variant_quality check (
+    (original_id is null and quality_height is null) or
+    (original_id is not null and quality_height is not null and quality_height in (360, 480, 720) and original_id <> id)
+  ),
+  unique (original_id, quality_height),
   created_at timestamptz not null default now()
 );
 
