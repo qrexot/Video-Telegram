@@ -378,7 +378,7 @@ async function variantFields(params: URLSearchParams) {
   const original = params.get("original")
   const height = Number(params.get("height"))
   if (original === null && !params.has("height")) return {}
-  if (!original || !uuid.test(original) || ![360, 480, 720].includes(height) || original === params.get("id")) throw new HttpError(400)
+  if (!original || !uuid.test(original) || ![360, 480, 720, 1080, 2160].includes(height) || original === params.get("id")) throw new HttpError(400)
   const item = await db.from("videos").select("id").eq("id", original)
     .is("original_id", null).not("telegram_message_id", "is", null).maybeSingle()
   if (item.error) throw item.error
