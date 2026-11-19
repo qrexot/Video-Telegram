@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#191919">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src blob:; connect-src https://*.supabase.co; form-action 'none'; base-uri 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src https://tilifwvlvomwnklviqtp.supabase.co; connect-src https://*.supabase.co; form-action 'none'; base-uri 'none'; object-src 'none'">
   <title>Видео — Video Telegram</title>
   <link rel="icon" href="./docs/video.svg">
   <link rel="stylesheet" href="./docs/style.css?v=3">
-  <script type="module" src="./docs/app.js?v=3"></script>
+  <script type="module" src="./docs/app.js?v=4"></script>
 </head>
 <body>
   <svg class="icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -82,7 +82,7 @@
       <button type="button" class="close subtle" data-close aria-label="Закрыть">×</button>
     </div>
     <form id="upload-form">
-      <label>Видеофайл<input name="video" type="file" accept="video/mp4,video/webm,.mp4,.webm" required><small>MP4 или WebM, до 20 МБ</small></label>
+      <label>Видеофайл<input name="video" type="file" accept="video/mp4,video/webm,.mp4,.webm" required><small>MP4 или WebM, до 512 МБ</small></label>
       <label>Название<input name="title" maxlength="120" required></label>
       <label>Описание <span class="optional">по желанию</span><textarea name="description" rows="3" maxlength="1200"></textarea></label>
       <progress id="upload-progress" aria-label="Ход загрузки" hidden></progress>

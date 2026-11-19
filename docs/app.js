@@ -16,9 +16,11 @@ let telegramRequest
 const player = $('player')
 const video = $('video')
 const pageSize = 24
+const mebibyte = 1024 * 1024
+const smallVideoLimit = 20 * mebibyte
+const videoLimit = 512 * mebibyte
+const batchSize = 4 * mebibyte
 let token = ''
-let playingUrl = ''
-let playerRequest
 let libraryRequest
 let uploadId
 let uploadRequest
@@ -41,7 +43,7 @@ const statusMessages = {
   401: 'Сеанс закончился. Войдите снова.',
   403: 'Этой учётной записи не открыт доступ.',
   409: 'Эта загрузка уже обрабатывается. Обновите список чуть позже.',
-  413: 'Видео превышает лимит в 20 МБ.',
+  413: 'Выбранный файл или часть загрузки превышает допустимый размер.',
   415: 'Поддерживаются видеофайлы MP4 и WebM.',
   429: 'Слишком много запросов. Попробуйте чуть позже.',
   503: 'Хранилище пока не подключено. Обратитесь к владельцу.',
@@ -55,7 +57,7 @@ async function responseError(response, fallback) {
 async function request(action, { method = 'GET', params = {}, body, signal, json } = {}) {
   const query = new URLSearchParams({ action, ...params })
   const headers = { apikey: config.publishableKey }
-  if (action === 'session' || action === 'upload' || action === 'telegram-setup') headers.Authorization = `Bearer ${token}`
+  if (action === 'session' || action.startsWith('upload') || action === 'telegram-setup') headers.Authorization = `Bearer ${token}`
   if (json) {
     headers['Content-Type'] = 'application/json'
     body = JSON.stringify(json)
@@ -202,24 +204,14 @@ async function loadLibrary(append = false) {
   }
 }
 
-async function openPlayer(item) {
-  const controller = new AbortController()
-  playerRequest = controller
+function openPlayer(item) {
   $('player-title').textContent = item.title
   $('player-description').textContent = item.description
   message($('player-status'), 'Получаем видео из Telegram…')
+  const params = new URLSearchParams({ action: 'play', id: item.id })
+  video.src = `${config.url}/functions/v1/video?${params}`
+  video.hidden = false
   player.showModal()
-  try {
-    const response = await request('play', { params: { id: item.id }, signal: controller.signal })
-    const blob = await response.blob()
-    if (controller.signal.aborted) return
-    playingUrl = URL.createObjectURL(blob)
-    video.src = playingUrl
-    video.hidden = false
-    message($('player-status'))
-  } catch (error) {
-    showError(error, $('player-status'))
-  }
 }
 
 async function upload(event) {
@@ -228,23 +220,44 @@ async function upload(event) {
   const file = uploadForm.elements.video.files[0]
   const title = uploadForm.elements.title.value.trim()
   const description = uploadForm.elements.description.value.trim()
-  if (!title || !file?.size || file.size > 20 * 1048576) {
-    message($('upload-status'), 'Укажите название и выберите видео объёмом до 20 МБ.', true)
+  if (!title || !file?.size) {
+    message($('upload-status'), 'Укажи название и выбери непустой видеофайл.', true)
+    return
+  }
+  if (file.size > videoLimit) {
+    message($('upload-status'), `Размер файла ${size.format(file.size / mebibyte)} МБ. Лимит 512 МБ.`, true)
     return
   }
 
   const controller = new AbortController()
   uploadRequest = controller
   for (const field of uploadForm.elements) field.disabled = true
-  $('upload-progress').hidden = false
+  const progress = $('upload-progress')
+  progress.hidden = false
+  progress.removeAttribute('value')
   message($('upload-status'), 'Отправляем видео в Telegram…')
   try {
-    const body = new FormData()
-    body.set('video', file)
-    body.set('title', title)
-    body.set('description', description)
+    const signal = controller.signal
     uploadId ??= crypto.randomUUID()
-    await request('upload', { method: 'POST', params: { id: uploadId }, body, signal: controller.signal })
+    if (file.size <= smallVideoLimit) {
+      const body = new FormData()
+      body.set('video', file)
+      body.set('title', title)
+      body.set('description', description)
+      await request('upload', { method: 'POST', params: { id: uploadId }, body, signal })
+    } else {
+      const params = { id: uploadId, size: file.size }
+      progress.max = file.size
+      progress.value = 0
+      for (let sent = 0; sent < file.size; sent += batchSize) {
+        const chunk = file.slice(sent, sent + batchSize)
+        await request('upload-part', { method: 'POST', params: { ...params, offset: sent }, body: chunk, signal })
+        progress.value = sent + chunk.size
+        message($('upload-status'), `Загружено ${Math.floor(100 * progress.value / file.size)}%`)
+      }
+      message($('upload-status'), 'Публикуем видео…')
+      await request('upload-finish', { method: 'POST', params, json: { title, description }, signal })
+    }
     if (controller.signal.aborted) return
     uploadId = undefined
     uploadForm.reset()
@@ -353,16 +366,14 @@ for (const button of document.querySelectorAll('[data-close]')) {
   })
 }
 player.addEventListener('close', () => {
-  playerRequest?.abort()
   video.pause()
   video.removeAttribute('src')
   video.load()
   video.hidden = true
-  if (playingUrl) URL.revokeObjectURL(playingUrl)
-  playingUrl = ''
 })
+video.addEventListener('loadedmetadata', () => message($('player-status')))
 video.addEventListener('error', () => {
-  if (playingUrl) message($('player-status'), 'Браузер не смог воспроизвести кодек этого файла.', true)
+  if (video.hasAttribute('src')) message($('player-status'), 'Не удалось воспроизвести видео. Проверь подключение и формат файла.', true)
 })
 uploadForm.elements.video.addEventListener('change', () => {
   const file = uploadForm.elements.video.files[0]
