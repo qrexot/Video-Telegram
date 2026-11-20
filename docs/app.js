@@ -58,12 +58,11 @@ const statusMessages = {
   413: 'Выбранный файл или часть загрузки превышает допустимый размер.',
   415: 'Поддерживаются видеофайлы MP4 и WebM.',
   429: 'Слишком много запросов. Попробуйте чуть позже.',
-  503: 'Хранилище пока не подключено. Обратитесь к владельцу.',
 }
 
 async function responseError(response, fallback) {
   const data = await response.json().catch(() => null)
-  return new RequestError(statusMessages[response.status] ?? data?.message ?? fallback, response.status)
+  return new RequestError(data?.message && data.message !== 'Запрос не выполнен.' ? data.message : statusMessages[response.status] ?? fallback, response.status)
 }
 
 async function request(action, { method = 'GET', params = {}, body, signal, json } = {}) {
@@ -377,7 +376,7 @@ $('photo-preview').addEventListener('load', (event) => {
   message($('photo-preview-status'))
 })
 $('photo-preview').addEventListener('error', () => {
-  if (openPhotoItem) message($('photo-preview-status'), 'Превью пока недоступно. Оригинал можно скачать.')
+  if (openPhotoItem) message($('photo-preview-status'), 'Превью сейчас недоступно. Можно попробовать скачать оригинал.')
 })
 $('photo-original').addEventListener('click', downloadPhoto)
 photoDialog.addEventListener('close', () => {
@@ -659,15 +658,15 @@ function renderTelegram(step) {
   field.autocomplete = step === 'password' ? 'off' : 'one-time-code'
   $('telegram-field').hidden = !needsValue
   $('telegram-label').textContent = step === 'password' ? 'Пароль двухэтапной защиты Telegram' : 'Код из Telegram'
-  $('telegram-submit').textContent = needsValue ? 'Подтвердить' : 'Отправить код'
+  $('telegram-submit').textContent = needsValue ? 'Подтвердить' : step === 'connected' ? 'Переподключить Telegram' : 'Отправить код'
   $('telegram-restart').hidden = !needsValue
-  telegramForm.hidden = !['ready', 'code', 'password'].includes(step)
+  telegramForm.hidden = !['ready', 'code', 'password', 'connected'].includes(step)
 
   const instructions = {
     ready: 'Нажми «Отправить код». Telegram пришлёт код входа.',
     code: 'Открой сообщение от Telegram и введи код здесь.',
     password: 'Telegram запрашивает пароль двухэтапной защиты.',
-    connected: 'Закрытый канал подключён. Можно загружать видео.',
+    connected: 'Канал настроен. Если выдача файлов остановилась, переподключи Telegram.',
     unconfigured: 'Ожидаем настройки канала.',
   }
   message(telegramMessage, instructions[step] || '')
@@ -705,7 +704,8 @@ $('telegram-open').addEventListener('click', () => {
 })
 telegramForm.addEventListener('submit', (event) => {
   event.preventDefault()
-  void telegramSetup(telegramStep === 'ready' ? 'start' : telegramStep)
+  const action = { ready: 'start', connected: 'reconnect' }[telegramStep] ?? telegramStep
+  void telegramSetup(action)
 })
 $('telegram-restart').addEventListener('click', () => void telegramSetup('start'))
 telegramDialog.addEventListener('close', () => {
@@ -874,7 +874,7 @@ video.addEventListener('waiting', () => {
   if (activeSource) message(playerStatus, 'Буферизация…')
 })
 video.addEventListener('error', () => {
-  if (video.hasAttribute('src')) message($('player-status'), 'Не удалось воспроизвести видео. Проверь подключение и формат файла.', true)
+  if (video.hasAttribute('src')) message($('player-status'), 'Видео сейчас недоступно. Попробуй открыть его позже.', true)
 })
 uploadForm.elements.video.addEventListener('change', () => {
   const file = uploadForm.elements.video.files[0]
